@@ -979,6 +979,7 @@ class EngineInfer(object):
             self.input_dump_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "inference_wav", 
                                         f"{testset_key}_input_{str(self.fs_in)[:-3]}kto{str(self.fs_src)[:-3]}k")
         os.makedirs(self.inference_dump_path, exist_ok=True)
+        os.makedirs(self.input_dump_path, exist_ok=True)
         logger.info(f"Inference dump path: {self.inference_dump_path}")
 
         
