@@ -866,35 +866,6 @@ class EngineEval(object):
             self.writer_src.log_audio(target.squeeze(0), 'test_clean_audio_'+str(idx), epoch)
 
 
-
-    @logger_wraps()
-    def _evaluate(self, dataloader, epoch):
-        self.model.eval()
-        
-        pbar = tqdm(total=len(dataloader), unit='utt', bar_format='{l_bar}{bar:5}{r_bar}{bar:-10b}', colour="WHITE", dynamic_ncols=True)
-        with torch.inference_mode():
-            for batch in dataloader:
-                noisy_orig = batch["noisy_distort_input"].type(torch.float32)
-                file_name = batch["file_name"]
-                fs_in = batch["fs_in"].item()
-                fs_src = batch["fs_src"].item()
-                # feature pre-processing
-
-                noisy_orig_stft = self.stft[str(fs_in)](noisy_orig.to(self.device), cplx=True)  # B, F, T
-
-                # generator
-                model_input = torch.stack([torch.real(noisy_orig_stft), torch.imag(noisy_orig_stft)],dim=-1) # B, F, T, 2
-                comp = self.model(model_input, out_F=self.out_F) # B, F, T, 2
-                out = torch.complex(comp[...,0], comp[...,1])  # [M, F, T]
-                out_wav = self.istft[str(fs_src)](out, cplx=True, squeeze=False) # B, F, T -> B, L
-                
-                # write the enhanced wav file
-                sf.write(os.path.join(self.inference_dump_path, f"{file_name[0]}.wav"), out_wav[0].cpu().numpy(), fs_src)
-
-                pbar.update(1)
-            pbar.close()
-
-
     @logger_wraps()
     def run_eval(self):
         with torch.cuda.device(self.device):
@@ -1000,9 +971,13 @@ class EngineInfer(object):
         if self.args.dump_path is not None:
             self.inference_dump_path = os.path.join(self.args.dump_path, "inference_wav", 
                                         f"{testset_key}_{self.train_phase}_{config_name[:-5]}_{str(self.fs_in)[:-3]}kto{str(self.fs_src)[:-3]}k")
+            self.input_dump_path = os.path.join(self.args.dump_path, "inference_wav", 
+                                        f"{testset_key}_input_{str(self.fs_in)[:-3]}kto{str(self.fs_src)[:-3]}k")
         else:
             self.inference_dump_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "inference_wav", 
                                         f"{testset_key}_{self.train_phase}_{config_name[:-5]}_{str(self.fs_in)[:-3]}kto{str(self.fs_src)[:-3]}k")
+            self.input_dump_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "inference_wav", 
+                                        f"{testset_key}_input_{str(self.fs_in)[:-3]}kto{str(self.fs_src)[:-3]}k")
         os.makedirs(self.inference_dump_path, exist_ok=True)
         logger.info(f"Inference dump path: {self.inference_dump_path}")
 
@@ -1015,6 +990,7 @@ class EngineInfer(object):
         with torch.inference_mode():
             for batch in dataloader:
                 noisy_orig = batch["noisy_distort_input"].type(torch.float32)
+                noisy = batch["noisy_distort"].type(torch.float32)
                 file_name = batch["file_name"]
                 fs_in = batch["fs_in"].item()
                 fs_src = batch["fs_src"].item()
@@ -1030,6 +1006,7 @@ class EngineInfer(object):
                 
                 # write the enhanced wav file
                 sf.write(os.path.join(self.inference_dump_path, f"{file_name[0]}.wav"), out_wav[0].cpu().numpy(), fs_src)
+                sf.write(os.path.join(self.input_dump_path, f"{file_name[0]}.wav"), noisy[0].cpu().numpy(), fs_src)
 
                 pbar.update(1)
             pbar.close()
