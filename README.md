@@ -1,6 +1,6 @@
 # TF-Restormer for Speech Restoration
 
-Time-Frequency domain Restormer for speech restoration. [Paper Link(Arxiv)](https://arxiv.org/pdf/2509.21003)
+Time-Frequency domain Restormer for speech restoration. [Paper Link(Arxiv)](https://arxiv.org/pdf/2509.21003) [Demo Link](https://tf-restormer.github.io/demo/)
 
 ## Installation
 
