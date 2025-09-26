@@ -1,4 +1,4 @@
-# TF_Restormer for Speech Restoration
+# TF-Restormer for Speech Restoration
 
 Time-Frequency domain Restormer for speech restoration. [Paper Link(Arxiv)](https://arxiv.org/pdf/2509.21003)
 
