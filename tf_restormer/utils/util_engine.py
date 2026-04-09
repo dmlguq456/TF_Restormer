@@ -35,19 +35,19 @@ class WarmupConstantSchedule(torch.optim.lr_scheduler.LambdaLR):
 
 
 
-def load_last_checkpoint_n_get_epoch(checkpoint_dir: str, model: torch.nn.Module, optimizer: torch.optim.Optimizer, location: torch.device | str) -> int:
+def load_last_checkpoint_n_get_epoch(checkpoint_dir: str, model: torch.nn.Module, optimizer: torch.optim.Optimizer | None = None, location: torch.device | str = 'cuda') -> int:
     """
     Load the latest checkpoint (model state and optimizer state) from a given directory.
 
     Args:
         checkpoint_dir (str): Directory containing the checkpoint files.
         model (torch.nn.Module): The model into which the checkpoint's model state should be loaded.
-        optimizer (torch.optim.Optimizer): The optimizer into which the checkpoint's optimizer state should be loaded.
-        location (str, optional): Device location for loading the checkpoint. Defaults to 'cpu'.
+        optimizer (torch.optim.Optimizer | None): The optimizer into which the checkpoint's optimizer state should be loaded. Defaults to None (skip optimizer loading).
+        location (str | torch.device, optional): Device location for loading the checkpoint. Defaults to 'cuda'.
 
     Returns:
-        int: The epoch number associated with the loaded checkpoint. 
-             If no checkpoint is found, returns 0 as the starting epoch.
+        int: The epoch number associated with the loaded checkpoint.
+             If no checkpoint is found, returns 1 as the starting epoch.
 
     Notes:
         - The checkpoint file is expected to have keys: 'model_state_dict', 'optimizer_state_dict', and 'epoch'.
@@ -68,7 +68,8 @@ def load_last_checkpoint_n_get_epoch(checkpoint_dir: str, model: torch.nn.Module
         logger.info(f"Loaded Pretrained model from {latest_checkpoint_file} .....")
         checkpoint_dict = torch.load(latest_checkpoint_file, map_location=location)
         model.load_state_dict(checkpoint_dict['model_state_dict'], strict=False) # Depend on weight file's key!!
-        optimizer.load_state_dict(checkpoint_dict['optimizer_state_dict'])
+        if optimizer is not None and 'optimizer_state_dict' in checkpoint_dict:
+            optimizer.load_state_dict(checkpoint_dict['optimizer_state_dict'])
         
         # Retrun latent epoch
         return checkpoint_dict['epoch'] + 1
