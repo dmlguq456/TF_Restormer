@@ -14,9 +14,9 @@ import librosa as rs
 
 # https://pytorch.org/docs/stable/tensorboard.html
 
-class MyWriter(SummaryWriter):
-    def __init__(self, logdir, n_fft=512,n_hop=256,sr=16000):
-        super(MyWriter, self).__init__(logdir,flush_secs=1)
+class TBWriter(SummaryWriter):
+    def __init__(self, logdir: str, n_fft: int = 512, n_hop: int = 256, sr: int = 16000) -> None:
+        super(TBWriter, self).__init__(logdir,flush_secs=1)
 
         self.n_fft = n_fft
         self.n_hop = n_hop
@@ -34,7 +34,7 @@ class MyWriter(SummaryWriter):
     def log_test(self,test_loss,step) : 
         self.add_scalar('test_loss', test_loss, step)
 
-    def log_audio(self,wav,label='label',step=0) : 
+    def log_audio(self, wav: torch.Tensor, label: str = 'label', step: int = 0) -> None:
         wav = wav.detach().cpu().numpy()
         wav = wav/np.max(np.abs(wav))
         self.add_audio(label, wav, step, self.sr)
@@ -70,7 +70,7 @@ class MyWriter(SummaryWriter):
         #self.add_image('output',output,step)
 
     # add_image(tag, img_tensor, global_step=None, walltime=None, dataformats='CHW')
-    def log_spec(self,data,label,step) :
+    def log_spec(self, data: torch.Tensor, label: str, step: int) -> None:
         self.add_image(label,
             spec2plot(data), step, dataformats='HWC')
 
@@ -78,7 +78,7 @@ class MyWriter(SummaryWriter):
         self.add_image(label,
             mag2plot(data), step, dataformats='HWC')
  
-    def log_wav2spec(self,src,key,step) :
+    def log_wav2spec(self, src: torch.Tensor, key: str, step: int) -> None:
         # src = src/torch.max(torch.abs(src))
         src = torch.stft(src,n_fft=self.n_fft, hop_length = self.n_hop, window = self.window.to(src.device), center = True, normalized=False, onesided=True, return_complex=True)
 
@@ -216,5 +216,5 @@ def wav2plotDOA(waveform, sample_rate=16000):
 
 
 if __name__=='__main__':
-    MyWriter()
+    TBWriter()
 

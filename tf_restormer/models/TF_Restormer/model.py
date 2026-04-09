@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
 import warnings
@@ -11,7 +13,7 @@ from .modules.module import TF_Encoder, TF_Decoder, Encoder, Decoder, FreqUpsamp
 STAGE_BLOCK = {"Encoder": TF_Encoder, "Decoder": TF_Decoder}
 
 # @logger_wraps()
-class Model_Enhance(torch.nn.Module):
+class Model(torch.nn.Module):
     def __init__(self,
                  online: bool,
                  input_embedding: dict,
@@ -49,7 +51,16 @@ class Model_Enhance(torch.nn.Module):
         self.estimator = Decoder(**output_spec)
 
         
-    def forward(self, x, out_F=961):
+    def forward(self, x: torch.Tensor, out_F: int = 961) -> torch.Tensor:
+        """Enhance input spectrogram via encoder-upsampler-decoder pipeline.
+
+        Args:
+            x: Complex spectrogram (B, F, T, 2) as stacked real/imag.
+            out_F: Output frequency bins. Default 961 (48kHz).
+
+        Returns:
+            Enhanced spectrogram (B, out_F, T, 2).
+        """
         # x : (B), F, T, 2
         if len(x.shape) == 3: # When No Batch Dimension
             x = x.unsqueeze(0)
@@ -81,18 +92,18 @@ class Model_Enhance(torch.nn.Module):
         return y # B, out_F, T, 2
 
     
-    def norm(self, x, Xscale=None):
+    def norm(self, x: torch.Tensor, Xscale: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         if Xscale == None:
             Xabs = torch.sqrt(x[...,0]**2 + x[...,1]**2) # B, T, F
             Xscale = Xabs.mean(dim=(1,2), keepdims=True) + 1.0e-8 # B, 1, 1
             Xscale = Xscale.unsqueeze(-1)
         return x / Xscale, Xscale
         
-    def inorm(self, x, Xscale):
+    def inorm(self, x: torch.Tensor, Xscale: torch.Tensor) -> torch.Tensor:
         return x * Xscale
 
 
-    def sinusoids(self, length, channels, max_timescale=10000):
+    def sinusoids(self, length: int, channels: int, max_timescale: int = 10000) -> torch.Tensor:
         """Returns sinusoids for positional embedding"""
         assert channels % 2 == 0
         log_timescale_increment = np.log(max_timescale) / (channels // 2 - 1)

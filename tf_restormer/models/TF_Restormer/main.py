@@ -1,9 +1,10 @@
+import argparse
 import os
 import torch
 from loguru import logger
 from .engine import Engine, EngineEval, EngineInfer, EngineInferFolder
 from .dataset import get_dataloaders
-from .model import Model_Enhance
+from .model import Model
 from tf_restormer.utils import util_system
 from tf_restormer.utils.decorators import logger_wraps
 
@@ -13,8 +14,9 @@ log_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log/sy
 logger.add(log_file_path, level="DEBUG", mode="w")
 
 @logger_wraps()
-def main(args):
-    
+def main(args: argparse.Namespace) -> None:
+    """Entry point for TF_Restormer training, evaluation, and inference."""
+
     ''' Build Setting '''
     # Call configuration file based on args.config
     config_name = getattr(args, 'config', 'baseline.yaml')  # default to baseline.yaml if not specified
@@ -29,7 +31,7 @@ def main(args):
     
     ''' Build Model '''
     # Call network model
-    model_e = Model_Enhance(**config["model"])
+    model_e = Model(**config["model"])
 
     ''' Build Engine '''
     # Call gpu id & device
@@ -68,7 +70,6 @@ def main(args):
             engine.run_eval()
 
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--engine_mode", type=str, default="train", 
                         choices=["train", "test", "inference_sample"],
