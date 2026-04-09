@@ -1,3 +1,4 @@
+import argparse
 import os
 import torch
 import random
@@ -6,7 +7,7 @@ import numpy as np
 import scipy.signal as ss
 from glob import glob
 import pickle
-from os.path import relpath 
+from os.path import relpath
 from tf_restormer.utils import util_dataset
 from tf_restormer.utils.decorators import logger_wraps
 from loguru import logger
@@ -22,7 +23,18 @@ load_dotenv()
 
 
 @logger_wraps()
-def get_dataloaders(args, phase, dataset_config, loader_config):    
+def get_dataloaders(args: argparse.Namespace, phase: str, dataset_config: dict, loader_config: dict) -> dict:
+    """Create train/valid/test DataLoaders based on engine mode.
+
+    Args:
+        args: CLI arguments (engine_mode determines partition split).
+        phase: Dataset phase key in config (e.g., 'to16k', 'to48k').
+        dataset_config: Dataset section of YAML config.
+        loader_config: DataLoader section of YAML config.
+
+    Returns:
+        Dict of DataLoaders keyed by partition name ('train', 'valid', 'test').
+    """
     # create dataset object for each partition
     partitions = ["train", "valid"] if args.engine_mode == "train"  else ["test"]
     dataloaders = {}
@@ -46,10 +58,10 @@ def get_dataloaders(args, phase, dataset_config, loader_config):
 
     for partition in partitions:
         if partition in ["train", "valid"]:
-            dataset = MyDataset(partition, dataset_config[phase], dataset_config['sythesis_config'])
+            dataset = SynthesisDataset(partition, dataset_config[phase], dataset_config['sythesis_config'])
         else:
             testset_name = dataset_config['testset_key']
-            dataset = MyDatasetTest(dataset_config[testset_name])
+            dataset = EvalDataset(dataset_config[testset_name])
             
         dataloader = DataLoader(
             dataset = dataset,
@@ -64,8 +76,9 @@ def get_dataloaders(args, phase, dataset_config, loader_config):
 
 
 @logger_wraps()
-class MyDataset(Dataset):
-    def __init__(self, partition, dataset_config, synthesis_config):
+class SynthesisDataset(Dataset):
+    def __init__(self, partition: str, dataset_config: dict, synthesis_config: dict) -> None:
+        """On-the-fly noisy signal synthesis dataset (clean + noise + RIR mixing, not TTS) for training and validation."""
 
         # load wave scp
         wave_scp_src = os.path.join(dataset_config["scp_dir"], dataset_config[partition]['spk'])
@@ -271,18 +284,19 @@ class MyDataset(Dataset):
                 "clean":clean}
 
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> dict:
         key = self.wave_keys[idx]
         return self._load(key)
 
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.wave_dict_src)
 
 
 
-class MyDatasetTest(Dataset):
-    def __init__(self, dataset_config):
+class EvalDataset(Dataset):
+    def __init__(self, dataset_config: dict) -> None:
+        """File-based evaluation dataset that loads pre-recorded clean/noisy pairs."""
         # Resolve environment variables in paths
         noisy_dir = dataset_config['noisy_dir']
         clean_dir = dataset_config['clean_dir']
@@ -336,7 +350,7 @@ class MyDatasetTest(Dataset):
         logger.info(f"Test dataset fs_src: {self.fs_src}, fs_in: {self.fs_in}")
         logger.info(f"Metrics are: {dataset_config['metrics']}")
         
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> dict:
 
         if self.list_clean != None:
             clean_path = self.list_clean[idx]
@@ -375,5 +389,5 @@ class MyDatasetTest(Dataset):
                     'fs_src': self.fs_src,
                     'file_name': os.path.splitext(os.path.basename(noisy_path))[0]}
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.n_item

@@ -62,7 +62,7 @@ class Encoder(nn.Module):
         if freq_pe:
             self.freq_pe = FreqPositionalEncoding(d_freq, d_model)
 
-    def forward(self, x: torch.tensor):
+    def forward(self, x: torch.Tensor):
         # x : B, F, T, 2
         x_r = x[...,0] # B, F, T
         x_i = x[...,1] # B, F, T
@@ -90,7 +90,7 @@ class TF_Encoder(nn.Module):
                 
                 self.block = LinTransEncoder(d_model, d_hidden, n_head, kernel_size, dropout_rate, Ekv)
 
-            def forward(self, x: torch.tensor):
+            def forward(self, x: torch.Tensor):
                 B, F, T, C = x.shape
                 x = x.permute(0, 2, 1, 3).reshape(B*T, F, C) # B, T, F, C
                 x = self.block(x)
@@ -104,7 +104,7 @@ class TF_Encoder(nn.Module):
 
                 self.block = TransEncoder(d_model, d_hidden, n_head, kernel_size, dropout_rate, rope)
 
-            def forward(self, x: torch.tensor):
+            def forward(self, x: torch.Tensor):
                 B, F, T, C = x.shape
                 x = x.reshape(B*F, T, C)
                 x = self.block(x)
@@ -118,7 +118,7 @@ class TF_Encoder(nn.Module):
 
                 self.block = nn.Sequential(*[MambaV1Block(d_model, d_state, d_conv, expand, dropout_rate) for _ in range(2)])
 
-            def forward(self, x: torch.tensor):
+            def forward(self, x: torch.Tensor):
                 B, F, T, C = x.shape
                 x = x.reshape(B*F, T, C)
                 x = self.block(x)
@@ -133,7 +133,7 @@ class TF_Encoder(nn.Module):
             self.freq_wise_block = OfflineTimeModule(**time_module['offline'], rope=rope) 
 
 
-    def forward(self, x: torch.tensor):
+    def forward(self, x: torch.Tensor):
         x = self.frame_wise_block(x)
         x = self.freq_wise_block(x)
         
@@ -152,7 +152,7 @@ class TF_Decoder(nn.Module):
                 
                 self.block = LinTransDecoder(d_model, d_model_kv, d_hidden, n_head, kernel_size, dropout_rate, Ekv)
 
-            def forward(self, x: torch.tensor, kv: torch.tensor, pad_len: int):
+            def forward(self, x: torch.Tensor, kv: torch.Tensor, pad_len: int):
                 B, F, T, C = x.shape
                 _, F_kv, _, C_kv = kv.shape
                 x = x.permute(0, 2, 1, 3) #* B, T, F, C
@@ -171,7 +171,7 @@ class TF_Decoder(nn.Module):
 
                 self.block = TransEncoder(d_model, d_hidden, n_head, kernel_size, dropout_rate, rope)
 
-            def forward(self, x: torch.tensor):
+            def forward(self, x: torch.Tensor):
                 B, F, T, C = x.shape
                 x = x.reshape(B*F, T, C)
                 x = self.block(x)
@@ -185,7 +185,7 @@ class TF_Decoder(nn.Module):
 
                 self.block = nn.Sequential(*[MambaV1Block(d_model, d_state, d_conv, expand, dropout_rate) for _ in range(2)])
 
-            def forward(self, x: torch.tensor):
+            def forward(self, x: torch.Tensor):
                 B, F, T, C = x.shape
                 x = x.reshape(B*F, T, C)
                 x = self.block(x)
@@ -200,7 +200,7 @@ class TF_Decoder(nn.Module):
             self.freq_wise_block = OfflineTimeModule(**time_module['offline'], rope=rope) 
 
 
-    def forward(self, x: torch.tensor, kv: torch.tensor, pad_len: int):
+    def forward(self, x: torch.Tensor, kv: torch.Tensor, pad_len: int):
         x = self.frame_wise_block(x, kv, pad_len)
         x = self.freq_wise_block(x)
         
@@ -270,7 +270,7 @@ class Decoder(nn.Module):
         self.mag = MagCompEstim(online, d_model)
         self.phase = ComplexCompEstim(online, d_model)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x : B, F, T, C
         B, F, T, C = x.shape
         x = x.permute(0, 3, 1, 2).contiguous()  # B, C, F, T

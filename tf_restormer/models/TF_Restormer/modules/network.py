@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import torch as th
 import torch.nn as nn
 import math
@@ -50,7 +52,7 @@ class MultiHeadSelfAttention(nn.Module):
         else:
             self.flash_attention_config = dict(enable_flash=False, enable_math=True, enable_mem_efficient=True)
 
-    def forward(self, input):
+    def forward(self, input: th.Tensor) -> th.Tensor:
         # get query, key, and value
         query, key, value = self.get_qkv(input)
 
@@ -124,7 +126,7 @@ class LinformerAttention(nn.Module):
         else:
             self.flash_attention_config = dict(enable_flash=False, enable_math=True, enable_mem_efficient=True)
 
-    def forward(self, input, kv=None):
+    def forward(self, input: th.Tensor, kv: th.Tensor | None = None) -> th.Tensor:
         if not self.selfattn:
             assert kv is not None, "In cross-attn, kv input is required."
 
@@ -234,7 +236,7 @@ class ConvFFN(th.nn.Module):
         self.net2 = nn.Conv1d(d_hidden, d_model, kernel_size, padding=(kernel_size-1)//2)
         self.silu = nn.SiLU()
         
-    def forward(self, x):
+    def forward(self, x: th.Tensor) -> th.Tensor:
         y = self.layernorm(x)
         y = y.permute(0, 2, 1)
         y = self.net1(y)
@@ -253,7 +255,7 @@ class TransEncoder(nn.Module):
         self.sa = MHSA(d_model, n_head, dropout_rate, rope=rope)
         self.ffn_2 = ConvFFN(d_model, d_hidden, kernel_size, 1, dropout_rate) 
 
-    def forward(self, x: th.tensor):
+    def forward(self, x: th.Tensor):
         #* B, L, C
         x = self.ffn_1(x)
         x = self.sa(x)
@@ -267,7 +269,7 @@ class LinTransEncoder(nn.Module):
         self.sa = LinMHSA(d_model, n_head, dropout_rate, Ekv)
         self.ffn_2 = ConvFFN(d_model, d_hidden, kernel_size, 1, dropout_rate) 
 
-    def forward(self, x: th.tensor):
+    def forward(self, x: th.Tensor):
         #* B, L, C
         x = self.ffn_1(x)
         x = self.sa(x)
@@ -281,7 +283,7 @@ class TransDecoder(nn.Module):
         self.sa = MHSA(d_model, n_head, dropout_rate, rope=rope)
         self.ffn2 = ConvFFN(d_model, d_hidden, kernel_size, 1, dropout_rate)
 
-    def forward(self, x: th.tensor):
+    def forward(self, x: th.Tensor):
         #* B, L, C
         x = self.ffn1(x)
         x = self.sa(x)
@@ -295,7 +297,7 @@ class LinTransDecoder(nn.Module):
         self.sa = LinMHSA(d_model, n_head, dropout_rate, Ekv)
         self.ffn = ConvFFN(d_model, d_hidden, kernel_size, 1, dropout_rate)
 
-    def forward(self, x: th.tensor, kv: th.tensor):
+    def forward(self, x: th.Tensor, kv: th.Tensor):
         #* B, L, C
         x = self.ca(x, kv)
         x = self.sa(x)

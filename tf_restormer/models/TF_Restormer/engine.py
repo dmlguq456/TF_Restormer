@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import argparse
 import os
 import torch
 import csv
@@ -18,11 +21,14 @@ import torchaudio.transforms as T
 from torchaudio.functional import resample as torch_resample
 from torchaudio.io import AudioEffector, CodecConfig
 from .loss import SSL_FM_Loss, MS_STFT_Gen_SC_Loss, Time_Domain_L1, UTMOS_Loss, HF_Loss
-from .modules.msstftd import SFIMultiScaleSTFTDiscriminator 
+from .modules.msstftd import SFIMultiScaleSTFTDiscriminator
 
+# @logger_wraps()
 class Engine(object):
-    def __init__(self, args, config, model, dataloaders, gpuid, device):
-        
+    """Training engine with two-stage (pretrain/adversarial) support."""
+
+    def __init__(self, args: argparse.Namespace, config: dict, model: torch.nn.Module, dataloaders: dict, gpuid: tuple, device: torch.device) -> None:
+
         ''' Default setting '''
         self.args = args  # Store args for later use
         self.engine_mode = args.engine_mode
@@ -67,7 +73,7 @@ class Engine(object):
         # optim, scheduler, STFT configuration
         optim_cls = getattr(torch.optim, self.config["engine"]["optimizer"]["name"])
         sched_cls = getattr(torch.optim.lr_scheduler, self.config["engine"]["scheduler"]["name"])
-        self.sample_file_list = config['engine']['sample_validation']
+        self.sample_file_list = config['engine'].get('sample_validation', [])
 
 
         # load enhance model
@@ -120,7 +126,7 @@ class Engine(object):
         
         self.audio_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), log_base, "tensorboard")
         os.makedirs(self.audio_log_path, exist_ok=True)
-        self.writer_src = util_writer.MyWriter(logdir=self.audio_log_path, 
+        self.writer_src = util_writer.TBWriter(logdir=self.audio_log_path,
                                                n_fft = int(config['stft']['frame_length'] * self.fs_src / 1000),
                                                n_hop = int(config['stft']['frame_shift'] * self.fs_src / 1000),
                                                sr=self.fs_src)
@@ -135,7 +141,7 @@ class Engine(object):
         )
 
 
-    def audio_effecter(self, audio, sample_rate, batch_wise=True):
+    def audio_effecter(self, audio: torch.Tensor, sample_rate: int, batch_wise: bool = True) -> tuple[torch.Tensor, int]:
         # codec effect
 
         assert sample_rate == 16000, "Currently only 16kHz is supported for audio_effecter"
@@ -197,7 +203,7 @@ class Engine(object):
         
         return audio, sample_rate
 
-    def target_downsample(self, target):
+    def target_downsample(self, target: torch.Tensor) -> tuple[torch.Tensor, int, int]:
         if random.random() < self.prob_downsample_src:
             fs_target = int(random.choice(self.fs_list_src))
             target = torch_resample(target, orig_freq=self.fs_src, new_freq=fs_target, lowpass_filter_width=32, rolloff=0.98)
@@ -208,7 +214,7 @@ class Engine(object):
 
         return target, fs_target, out_F
 
-    def _discriminator_step(self, out, src, fs, update: bool):
+    def _discriminator_step(self, out: torch.Tensor, src: torch.Tensor, fs: int, update: bool) -> torch.Tensor:
         total = 0.0
         num_iter = 2 if update else 1
         for _ in range(num_iter):
@@ -231,7 +237,7 @@ class Engine(object):
         return cur_loss_disc
 
 
-    def _generator_step(self, out, src, fs):
+    def _generator_step(self, out: torch.Tensor, src: torch.Tensor, fs: int) -> tuple[torch.Tensor, torch.Tensor]:
         # disable D-grad
         for p in self.msstftd.parameters(): p.requires_grad_(False)
 
@@ -253,7 +259,8 @@ class Engine(object):
         return cur_loss_G_adv, cur_loss_G_fm
 
     @logger_wraps()
-    def _train(self, _dataloader, epoch):
+    def _train(self, _dataloader: DataLoader, epoch: int) -> tuple[dict, int]:
+        """Run one training epoch."""
         if self.subset_conf["train"]["subset"]:
             sampler = util_engine.create_sampler(len(_dataloader.dataset), self.subset_conf["train"]["num_per_epoch"])
             dataloader = DataLoader(dataset = _dataloader.dataset, collate_fn = _dataloader.collate_fn, sampler = sampler, **self.loader_config)
@@ -340,7 +347,8 @@ class Engine(object):
         return dict_loss, n_batch
     
     @logger_wraps()
-    def _validate(self, _dataloader, epoch):
+    def _validate(self, _dataloader: DataLoader, epoch: int) -> tuple[dict, int]:
+        """Run one validation epoch."""
         if self.subset_conf["valid"]["subset"]:
             num_smmpl = self.subset_conf["valid"]["num_per_epoch"] if epoch > 0 else 100 
             sampler = util_engine.create_sampler(len(_dataloader.dataset), num_smmpl)
@@ -466,7 +474,8 @@ class Engine(object):
         
     
     @logger_wraps()
-    def run(self):
+    def run(self) -> None:
+        """Execute full training loop with validation and checkpointing."""
         with torch.cuda.device(self.device):
             init_loss_dict, _ = self._validate(self.dataloaders['valid'], self.start_epoch-1)
             logger.info((f"[INIT] Loss(time/mini-batch)\n Epoch {self.start_epoch-1:2d}: "
@@ -550,10 +559,13 @@ class Engine(object):
             self.writer_src.close()
             logger.info("TensorBoard writer closed successfully")
 
-        
 
+
+# @logger_wraps()
 class EngineEval(object):
-    def __init__(self, args, config, model, dataloaders, gpuid, device):
+    """Evaluation engine computing comprehensive metrics on test sets."""
+
+    def __init__(self, args: argparse.Namespace, config: dict, model: torch.nn.Module, dataloaders: dict, gpuid: tuple, device: torch.device) -> None:
 
         ''' Default setting '''
         self.args = args  # Store args for later use
@@ -564,12 +576,12 @@ class EngineEval(object):
         self.model = model.to(self.device)
         self.dataloaders = dataloaders # self.dataloaders['train'] or ['valid'] or ['test']
         testset_key = self.config['dataset_test']['testset_key']
-        self.input_eval = config["dataset_test"]['input_eval']
-        self.output_eval = config["dataset_test"]['output_eval']
+        self.input_eval = config["dataset_test"].get('input_eval', True)
+        self.output_eval = config["dataset_test"].get('output_eval', True)
         self.fs_src = config['dataset_test'][testset_key]['sample_rate_src']
         self.fs_in = config['dataset_test'][testset_key]['sample_rate_in']
-        self.metrics_key = config['dataset_test'][testset_key]['metrics']
-        self.resampler = T.Resample(orig_freq=self.fs_src, new_freq=16000, 
+        self.metrics_key = config['dataset_test'][testset_key].get('metrics', [])
+        self.resampler = T.Resample(orig_freq=self.fs_src, new_freq=16000,
                                     resampling_method='sinc_interp_hann',
                                     lowpass_filter_width=32,
                                     rolloff=0.98).to(self.device)
@@ -598,7 +610,7 @@ class EngineEval(object):
             self.istft[fs] = util_stft.iSTFT(frame_len, frame_hop, device=self.device, normalize=True)
         self.out_F = int(config['stft']['frame_length'] * int(self.fs_src) / 1000) // 2 + 1
 
-        self.sample_file_list = config['engine']['sample_validation']
+        self.sample_file_list = config['engine'].get('sample_validation', [])
         # load enhance model
         config_name = self.args.config if hasattr(self.args, 'config') else 'default'
         log_base = f"log/log_{self.train_phase}_{config_name}"
@@ -611,12 +623,12 @@ class EngineEval(object):
         
         self.audio_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), log_base, "tensorboard_eval_"+testset_key)
         os.makedirs(self.audio_log_path, exist_ok=True)
-        self.writer_src = util_writer.MyWriter(logdir=self.audio_log_path, 
-                                               n_fft=config['stft']['frame_length'] * self.fs_src // 16000, 
+        self.writer_src = util_writer.TBWriter(logdir=self.audio_log_path,
+                                               n_fft=config['stft']['frame_length'] * self.fs_src // 16000,
                                                n_hop=config['stft']['frame_shift'] * self.fs_src // 16000,
                                                sr=self.fs_src)
 
-        self.random_sample_idx = self.config['dataset_test'][testset_key]['random_sample_idx']
+        self.random_sample_idx = self.config['dataset_test'][testset_key].get('random_sample_idx', [10, 20, 30, 40, 50])
 
         # Logging 
         input_shape = tuple(self.stft[str(self.fs_in)](torch.randn(1, self.fs_in).to(self.device), cplx=True).squeeze(0).shape) + (2,) # (B, F, T, 2)
@@ -650,7 +662,7 @@ class EngineEval(object):
                 metrics[f'{key}_2'] += value_out**2    
     
     @logger_wraps()
-    def _evaluate(self, dataloader, epoch):
+    def _evaluate(self, dataloader: DataLoader, epoch: int) -> tuple[dict, dict, dict, int]:
         self.model.eval()
         from collections import defaultdict
         
@@ -867,7 +879,8 @@ class EngineEval(object):
 
 
     @logger_wraps()
-    def run_eval(self):
+    def run_eval(self) -> None:
+        """Run evaluation on all configured test sets."""
         with torch.cuda.device(self.device):
             loss_dict, metric_mean, metric_cfd, n_batch = self._evaluate(self.dataloaders['test'], self.start_epoch-1)
             
@@ -890,7 +903,7 @@ class EngineEval(object):
             log_metrics("95% CONFIDENCE SCORE", metric_cfd)
             
             # --- Logging to tensorboard ---
-            if self.config['dataset_test']['tensorboard_logging']:
+            if self.config['dataset_test'].get('tensorboard_logging', True):
                 # Log loss values
                 loss_log_dict = {'STFT_L1': loss_dict['L_se'], 'Time_L1': loss_dict['L_time'], 'SSL_rep': loss_dict['L_rep']}
                 self.writer_src.add_scalars(f"Loss_Test_{self.train_phase}", loss_log_dict, self.start_epoch)
@@ -914,21 +927,26 @@ class EngineEval(object):
 
 
     @logger_wraps()
-    def run_infer(self):
+    def run_infer(self) -> None:
+        """Run inference with evaluation metrics and save enhanced audio.
+
+        Note: calls _inference which is not defined on EngineEval — see EngineInfer.
+        """
         with torch.cuda.device(self.device):
             loss_dict, metric_mean, metric_cfd, n_batch = self._inference(self.dataloaders['test'], self.start_epoch-1)
-            
+
         logger.info(f"Inference and file writing for {self.config['dataset_test']['testset_key']} dataset done!")
-        
+
         # Close the writer to properly save all data and release resources
         self.writer_src.close()
         logger.info("TensorBoard writer closed successfully")
-        
 
 
-
+# @logger_wraps()
 class EngineInfer(object):
-    def __init__(self, args, config, model, dataloaders, gpuid, device):
+    """Inference engine that saves enhanced WAV files."""
+
+    def __init__(self, args: argparse.Namespace, config: dict, model: torch.nn.Module, dataloaders: dict, gpuid: tuple, device: torch.device) -> None:
 
         ''' Default setting '''
         self.args = args  # Store args for later use
@@ -940,8 +958,8 @@ class EngineInfer(object):
         self.model = model.to(self.device)
         self.dataloaders = dataloaders # self.dataloaders['train'] or ['valid'] or ['test']
         self.subset_conf = {}
-        self.subset_conf["train"] = config["engine"]["subset"]["train"]
-        self.subset_conf["valid"] = config["engine"]["subset"]["valid"]
+        self.subset_conf["train"] = config["engine"].get("subset", {}).get("train", {"subset": False})
+        self.subset_conf["valid"] = config["engine"].get("subset", {}).get("valid", {"subset": False})
         testset_key = self.config['dataset_test']['testset_key']
         self.fs_src = config['dataset_test'][testset_key]['sample_rate_src']
         self.fs_in = config['dataset_test'][testset_key]['sample_rate_in']
@@ -984,7 +1002,7 @@ class EngineInfer(object):
 
         
     @logger_wraps()
-    def _inference(self, dataloader):
+    def _inference(self, dataloader: DataLoader) -> None:
         self.model.eval()
         
         pbar = tqdm(total=len(dataloader), unit='utt', bar_format='{l_bar}{bar:5}{r_bar}{bar:-10b}', colour="WHITE", dynamic_ncols=True)
@@ -1014,20 +1032,22 @@ class EngineInfer(object):
 
 
     @logger_wraps()
-    def run_infer(self, sample_file=None):
+    def run_infer(self, sample_file: str | None = None) -> None:
+        """Run inference and save enhanced audio."""
         with torch.cuda.device(self.device):
             self._inference(self.dataloaders['test'])
-            
+
         logger.info(f"Inference and file writing for {self.config['dataset_test']['testset_key']} dataset done!")
 
 
+# @logger_wraps()
 class EngineInferFolder(object):
     """
     Folder-based inference engine with chunk processing.
     Reads all .wav files from input_dir, enhances them chunk-by-chunk, saves to output_dir.
     """
 
-    def __init__(self, args, config, model, gpuid, device):
+    def __init__(self, args: argparse.Namespace, config: dict, model: torch.nn.Module, gpuid: tuple, device: torch.device) -> None:
         self.args = args
         self.config = config
         self.gpuid = gpuid
@@ -1154,7 +1174,7 @@ class EngineInferFolder(object):
 
     # ------------------------------------------------------------------
     @logger_wraps()
-    def run_infer_folder(self):
+    def run_infer_folder(self) -> None:
         """Process all .wav files in input_dir and write results to output_dir, preserving subdirectory structure."""
         from glob import glob as _glob
         wav_files = sorted(_glob(os.path.join(self.input_dir, '**', '*.wav'), recursive=True))

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import torch
 import numpy as np
@@ -21,7 +23,7 @@ import random
 
 
 class WarmupConstantSchedule(torch.optim.lr_scheduler.LambdaLR):
-    def __init__(self, optimizer, warmup_steps, last_epoch=-1):
+    def __init__(self, optimizer: torch.optim.Optimizer, warmup_steps: int, last_epoch: int = -1) -> None:
         def lr_lambda(step):
             if step < warmup_steps:
                 return float(step) / float(warmup_steps)
@@ -33,7 +35,7 @@ class WarmupConstantSchedule(torch.optim.lr_scheduler.LambdaLR):
 
 
 
-def load_last_checkpoint_n_get_epoch(checkpoint_dir, model, optimizer, location):
+def load_last_checkpoint_n_get_epoch(checkpoint_dir: str, model: torch.nn.Module, optimizer: torch.optim.Optimizer, location: torch.device | str) -> int:
     """
     Load the latest checkpoint (model state and optimizer state) from a given directory.
 
@@ -158,18 +160,17 @@ def load_last_checkpoint_n_get_epoch(checkpoint_dir, model, optimizer, location)
 
 
 
-def save_checkpoint_per_nth(nth, epoch, model, optimizer, train_loss, valid_loss, checkpoint_path):
-    """
-    Save the state of the model and optimizer every nth epoch to a checkpoint file.
-    Additionally, log and save the checkpoint file using wandb.
+def save_checkpoint_per_nth(nth: int, epoch: int, model: torch.nn.Module, optimizer: torch.optim.Optimizer, train_loss: float, valid_loss: float, checkpoint_path: str) -> None:
+    """Save model and optimizer state every nth epoch.
 
     Args:
-        nth (int): Interval for which checkpoints should be saved.
-        epoch (int): The current training epoch.
-        model (nn.Module): The model whose state needs to be saved.
-        optimizer (Optimizer): The optimizer whose state needs to be saved.
-        checkpoint_path (str): Directory path where the checkpoint will be saved.
-        wandb_run (wandb.wandb_run.Run): The current wandb run to log and save the checkpoint.
+        nth: Interval for which checkpoints should be saved.
+        epoch: The current training epoch.
+        model: The model whose state needs to be saved.
+        optimizer: The optimizer whose state needs to be saved.
+        train_loss: Current training loss.
+        valid_loss: Current validation loss.
+        checkpoint_path: Directory path where the checkpoint will be saved.
 
     Returns:
         None
@@ -188,21 +189,20 @@ def save_checkpoint_per_nth(nth, epoch, model, optimizer, train_loss, valid_loss
         
         # Log and save the checkpoint file using wandb
 
-def save_checkpoint_per_best(best, valid_loss, train_loss, epoch, model, optimizer, checkpoint_path):
-    """
-    Save the state of the model and optimizer every nth epoch to a checkpoint file.
-    Additionally, log and save the checkpoint file using wandb.
+def save_checkpoint_per_best(best: float, valid_loss: float, train_loss: float, epoch: int, model: torch.nn.Module, optimizer: torch.optim.Optimizer, checkpoint_path: str) -> float:
+    """Save model and optimizer state when validation loss improves.
 
     Args:
-        nth (int): Interval for which checkpoints should be saved.
-        epoch (int): The current training epoch.
-        model (nn.Module): The model whose state needs to be saved.
-        optimizer (Optimizer): The optimizer whose state needs to be saved.
-        checkpoint_path (str): Directory path where the checkpoint will be saved.
-        wandb_run (wandb.wandb_run.Run): The current wandb run to log and save the checkpoint.
+        best: Current best validation loss.
+        valid_loss: Current validation loss.
+        train_loss: Current training loss.
+        epoch: The current training epoch.
+        model: The model whose state needs to be saved.
+        optimizer: The optimizer whose state needs to be saved.
+        checkpoint_path: Directory path where the checkpoint will be saved.
 
     Returns:
-        None
+        Updated best validation loss (float).
     """
     if valid_loss < best:
         # Save the state of the model and optimizer to a checkpoint file
@@ -219,7 +219,7 @@ def save_checkpoint_per_best(best, valid_loss, train_loss, epoch, model, optimiz
         best = valid_loss
     return best
 
-def step_scheduler(scheduler, **kwargs):
+def step_scheduler(scheduler: torch.optim.lr_scheduler.LRScheduler, **kwargs) -> None:
     if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
         scheduler.step(kwargs.get('val_loss'))
     elif isinstance(scheduler, torch.optim.lr_scheduler.StepLR):
@@ -238,8 +238,8 @@ def print_parameters_count(model):
         logger.info(f"{name}: {param_count}")
     logger.info(f"Total parameters: {(total_parameters / 1e6):.2f}M")
 
-def model_params_mac_summary(model, input_shape, metrics, device):
-    
+def model_params_mac_summary(model: torch.nn.Module, input_shape: tuple, metrics: list[str], device: torch.device) -> None:
+    """Log model MACs and parameter counts using multiple profilers."""
     # ptflpos
     if 'ptflops' in metrics:
         MACs_ptflops, params_ptflops = get_model_complexity_info(model, (*input_shape,), print_per_layer_stat=False, verbose=False) # (num_samples,)
@@ -279,7 +279,7 @@ def model_params_mac_summary(model, input_shape, metrics, device):
     # logger.info(f"Timing: {timings.mean()}")
 
 
-def create_sampler(dataset_size, num_samples):
+def create_sampler(dataset_size: int, num_samples: int) -> torch.utils.data.SubsetRandomSampler:
     indices = list(range(dataset_size))
     random.shuffle(indices)
     sampled_indices = indices[:num_samples]
@@ -307,9 +307,9 @@ class RandSpecAugment:
     per_example=True  →  배치의 각 샘플에 독립 마스크
     """
     def __init__(self,
-                 t_len=(10, 20), f_len=(40, 60),
-                 t_num=(2,  5),  f_num=(1, 2),
-                 per_example=True, device="cpu"):
+                 t_len: tuple[int, int] = (10, 20), f_len: tuple[int, int] = (40, 60),
+                 t_num: tuple[int, int] = (2,  5),  f_num: tuple[int, int] = (1, 2),
+                 per_example: bool = True, device: str = "cpu") -> None:
         self.t_len, self.f_len = t_len, f_len
         self.t_num, self.f_num = t_num, f_num
         self.per_example = per_example
@@ -351,7 +351,7 @@ class RandSpecAugment:
         return out, mask_idx
 
     # -------- 호출부 --------
-    def __call__(self, mag: torch.Tensor, is_idx=False) -> torch.Tensor:
+    def __call__(self, mag: torch.Tensor, is_idx: bool = False) -> torch.Tensor:
         """
         mag : (B, F, T) or (F, T)   torch.Tensor
         """
