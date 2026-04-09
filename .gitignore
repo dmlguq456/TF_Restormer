@@ -170,17 +170,21 @@ cython_debug/
 
 
 
-#custom
+#custom (updated for tf_restormer package)
 models/*/log
 models/*/log*
 models/.legacy
+tf_restormer/models/*/log
+tf_restormer/models/*/log*
 .legacy
 data/RIR_filter_v9
 data/scp
 models/*/wav_out
+tf_restormer/models/*/wav_out
 data/RIR_filter_v9
 data/valid_sample
 models/*/inference_wav
+tf_restormer/models/*/inference_wav
 demo
 
 # Temporary data, logs, archives
@@ -194,3 +198,4 @@ log_tmp*
 .claude_reports/
 workbench.ipynb
 models/*/configs/.legacy/
+tf_restormer/models/*/configs/.legacy/

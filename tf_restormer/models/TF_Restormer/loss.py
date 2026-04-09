@@ -5,9 +5,9 @@ from math import ceil
 from itertools import permutations
 from dataclasses import dataclass, field, fields
 from loguru import logger
-from utils.decorators import *
-from utils.util_stft import STFT, iSTFT
-from utils.util_engine import p_law_compress
+from tf_restormer.utils.decorators import logger_wraps
+from tf_restormer.utils.util_stft import STFT, iSTFT
+from tf_restormer.utils.util_engine import p_law_compress
 from transformers import WhisperModel
 from transformers import Wav2Vec2Processor, Wav2Vec2Model
 from torchaudio.transforms import MelSpectrogram, Resample

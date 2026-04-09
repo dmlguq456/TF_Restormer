@@ -1,9 +1,13 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "TF-Restormer"
 version = "0.1.0"
 description = "PyTorch implementation of TF-Restormer"
 readme = "README.md"
-requires-python = "==3.12.*"
+requires-python = ">=3.9"
 dependencies = [
     "beartype>=0.21.0",
     "colorednoise==2.2.0",
@@ -112,6 +116,13 @@ dependencies = [
     "mamba-ssm>=2.2.5",
     "mir-eval>=0.8.2",
 ]
+
+[tool.setuptools.packages.find]
+include = ["tf_restormer*"]
+
+[tool.setuptools.package-data]
+"tf_restormer.models.TF_Restormer" = ["configs/*.yaml"]
+"tf_restormer.utils" = ["NISQA_models/*.tar", "dnsmos_models/*.onnx", "km/*.bin"]
 
 [tool.uv]
 index-strategy = "unsafe-best-match"

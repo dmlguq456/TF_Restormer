@@ -1,13 +1,22 @@
 import argparse
 import importlib
 
+try:
+    import tf_restormer  # noqa: F401
+except ImportError as e:
+    import sys
+    sys.exit(
+        f"Error: {e}\n"
+        "Install with: pip install -e .  (or: uv sync)"
+    )
+
 # Parse args
 parser = argparse.ArgumentParser(
     description="Command to start PIT training, configured by .yaml files")
 parser.add_argument(
     "--model",
     type=str,
-    default="IQformer_v6_0_0",
+    default="TF_Restormer",
     dest="model",
     help="Insert model name")
 parser.add_argument(
@@ -36,5 +45,5 @@ parser.add_argument(
 args = parser.parse_args()
 
 # Call target model
-main_module = importlib.import_module(f"models.{args.model}.main")
+main_module = importlib.import_module(f"tf_restormer.models.{args.model}.main")
 main_module.main(args)

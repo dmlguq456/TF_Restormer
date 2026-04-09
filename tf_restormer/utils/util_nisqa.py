@@ -4,7 +4,6 @@ Simplified NISQA wrapper for direct audio input
 Based on original NISQA by Gabriel Mittag, TU-Berlin
 """
 import os
-import sys
 import torch
 import librosa
 import numpy as np
@@ -39,15 +38,12 @@ class NISQAModel:
             'ms_channel': None,
         }
         
-        # Add NISQA_models to path
-        sys.path.insert(0, str(self.model_path))
-        
         # Load model
         self._load_model(pretrained_model)
     
     def _load_model(self, pretrained_model=None):
         """Load NISQA model and weights"""
-        from NISQA_lib import NISQA
+        from tf_restormer.utils.NISQA_models.NISQA_lib import NISQA
         
         # Load pretrained model if provided
         if pretrained_model is None:

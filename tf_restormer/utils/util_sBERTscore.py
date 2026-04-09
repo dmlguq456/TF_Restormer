@@ -2,9 +2,9 @@ import torch
 import numpy as np
 try:
     # Import from local utils modules
-    from utils.util_speechbleu import SpeechBLEU
-    from utils.util_speechbertscore import SpeechBERTScore  
-    from utils.util_speechtokendistance import SpeechTokenDistance
+    from tf_restormer.utils.util_speechbleu import SpeechBLEU
+    from tf_restormer.utils.util_speechbertscore import SpeechBERTScore
+    from tf_restormer.utils.util_speechtokendistance import SpeechTokenDistance
     DISCRETE_SPEECH_METRICS_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: Speech metrics not available. Error: {e}")
