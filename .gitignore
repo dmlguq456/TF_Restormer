@@ -185,6 +185,7 @@ demo
 
 # Temporary data, logs, archives
 SimData_tmp/
+.tmp/
 data/moving_selected_*
 data/sample_selected_*
 log_tmp*
