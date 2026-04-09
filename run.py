@@ -1,5 +1,6 @@
 import argparse
 import importlib
+from loguru import logger
 
 try:
     import tf_restormer  # noqa: F401
@@ -25,12 +26,6 @@ parser.add_argument(
     default="train",
     help="This option is used to chooose the mode")
 parser.add_argument(
-    "--sample_file",
-    type=str,
-    default=None,
-    help="Sample wav file for inference"
-)
-parser.add_argument(
     "--config",
     type=str,
     default="baseline.yaml",
@@ -42,8 +37,51 @@ parser.add_argument(
     default=None,
     help="Path to save inference results"
 )
+parser.add_argument("--input", type=str, default=None,
+                    help="Input audio file or directory for inference")
+parser.add_argument("--output", type=str, default=None,
+                    help="Output directory for inference results")
+parser.add_argument("--gpuid", type=str, default="0",
+                    help="GPU device id(s)")
 args = parser.parse_args()
 
+if args.engine_mode == "infer_sample":
+    import warnings
+    warnings.warn(
+        "Deprecated: --engine_mode infer_sample is replaced by --engine_mode infer --input <file>. "
+        "Will be removed in a future version.",
+        DeprecationWarning, stacklevel=2
+    )
+    args.engine_mode = "infer"
+
 # Call target model
-main_module = importlib.import_module(f"tf_restormer.models.{args.model}.main")
-main_module.main(args)
+
+
+def resolve_module_path(model_name, module_name):
+    return f"tf_restormer.models.{model_name}.{module_name}"
+
+
+if args.engine_mode in ("infer", "eval"):
+    try:
+        infer_module = importlib.import_module(resolve_module_path(args.model, "main_infer"))
+    except ModuleNotFoundError as e:
+        if e.name is not None and "main_infer" not in e.name:
+            raise
+        logger.warning(
+            f"main_infer module not found for model '{args.model}' "
+            f"(engine_mode='{args.engine_mode}'). "
+            "Falling back to main.main — this model does not support eval/infer mode "
+            "and will run training instead. If this is unintended, check your --model argument."
+        )
+        if args.engine_mode != "train":
+            raise RuntimeError(
+                f"engine_mode='{args.engine_mode}' requires main_infer module, "
+                f"but it was not found for model '{args.model}'."
+            )
+        main_module = importlib.import_module(resolve_module_path(args.model, "main"))
+        main_module.main(args)
+    else:
+        infer_module.main_infer(args)
+else:
+    main_module = importlib.import_module(resolve_module_path(args.model, "main"))
+    main_module.main(args)
