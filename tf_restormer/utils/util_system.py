@@ -5,7 +5,7 @@ import torch
 import inspect
 
 from loguru import logger
-from utils.decorators import *
+from tf_restormer.utils.decorators import logger_wraps
 
 
 @logger_wraps()

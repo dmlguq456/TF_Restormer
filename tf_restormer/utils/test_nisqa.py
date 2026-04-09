@@ -3,7 +3,7 @@
 Quick NISQA test to verify parameters
 """
 import numpy as np
-from util_nisqa import NISQAModel
+from tf_restormer.utils.util_nisqa import NISQAModel
 
 # Create dummy audio (3 seconds at 48kHz)
 fs = 48000

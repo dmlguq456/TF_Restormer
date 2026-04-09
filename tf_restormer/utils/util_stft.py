@@ -4,7 +4,7 @@ import numpy as np
 from math import ceil
 from dataclasses import dataclass, field, fields
 from loguru import logger
-from utils.decorators import *
+from tf_restormer.utils.decorators import logger_wraps
 
 
 class STFTBase(torch.nn.Module):
