@@ -7,7 +7,7 @@ name = "tf-restormer"
 version = "0.1.0"
 description = "Time-Frequency Restormer speech enhancement"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 dependencies = [
     # Core (inference-only)
     "numpy",
