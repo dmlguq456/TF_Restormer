@@ -1,7 +1,7 @@
 import os
 import torch
 from loguru import logger
-from .engine import Engine, EngineEval, EngineInfer
+from .engine import Engine, EngineEval, EngineInfer, EngineInferFolder
 from .dataset import get_dataloaders
 from .model import Model_Enhance
 from utils import util_system
@@ -27,13 +27,6 @@ def main(args):
     config = yaml_dict["config"] # wandb login success or fail
         
     
-    # Call DataLoader [train / valid / test / etc...]
-    if args.engine_mode == "train":
-        dataloaders = get_dataloaders(args, config["dataset_phase"], config["dataset"], config["dataloader"])
-    else:
-        dataloaders = get_dataloaders(args, config["dataset_phase"], config["dataset_test"], config["dataloader"])
-        
-    
     ''' Build Model '''
     # Call network model
     model_e = Model_Enhance(**config["model"])
@@ -43,17 +36,36 @@ def main(args):
     gpuid = tuple(map(int, config["engine"]["gpuid"].split(',')))
     device = torch.device(f'cuda:{gpuid[0]}')
 
-    # Call & Run Engine
-    logger.info(f"Training Phase: \"{config['train_phase']}\" and Dataset Phase: \"{config['dataset_phase']}\" ")
+    # Folder-based inference: skip DataLoader entirely
+    if args.engine_mode == "infer" and getattr(args, 'input_dir', None):
+        logger.info(f"[FolderInfer] input_dir={args.input_dir}  output_dir={args.output_dir}")
+        engine = EngineInferFolder(args, config, model_e, gpuid, device)
+        engine.run_infer_folder()
+        return
+
+    # Call DataLoader [train / valid / test / etc...]
     if args.engine_mode == "train":
+        dataloaders = get_dataloaders(args, config["dataset_phase"], config["dataset"], config["dataloader"])
         engine = Engine(args, config, model_e, dataloaders, gpuid, device)
         engine.run()
-    elif args.engine_mode == "infer":
-        engine = EngineInfer(args, config, model_e, dataloaders, gpuid, device)
-        engine.run_infer()
-    elif args.engine_mode == "eval":
-        engine = EngineEval(args, config, model_e, dataloaders, gpuid, device)
-        engine.run_eval()
+        return
+
+    # Support testset_key as a list for sequential evaluation
+    testset_keys = config['dataset_test']['testset_key']
+    if isinstance(testset_keys, str):
+        testset_keys = [testset_keys]
+
+    for i, key in enumerate(testset_keys):
+        logger.info(f"===== [{i+1}/{len(testset_keys)}] testset_key: \"{key}\" =====")
+        config['dataset_test']['testset_key'] = key
+        dataloaders = get_dataloaders(args, config["dataset_phase"], config["dataset_test"], config["dataloader"])
+
+        if args.engine_mode == "infer":
+            engine = EngineInfer(args, config, model_e, dataloaders, gpuid, device)
+            engine.run_infer()
+        elif args.engine_mode == "eval":
+            engine = EngineEval(args, config, model_e, dataloaders, gpuid, device)
+            engine.run_eval()
 
 if __name__ == "__main__":
     import argparse

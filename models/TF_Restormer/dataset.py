@@ -308,8 +308,14 @@ class MyDatasetTest(Dataset):
                 else:
                     raise ValueError(f"Environment variable {var} not found in .env file")
 
-        noisy_list = glob(os.path.join(noisy_dir, '**', '*.wav'), recursive=True)
-        noisy_list += glob(os.path.join(noisy_dir, '**', '*.flac'), recursive=True)
+        # noisy_suffix: e.g. "_ch1" for REVERB challenge (filters noisy files by suffix)
+        self.noisy_suffix = dataset_config.get('noisy_suffix', '')
+        if self.noisy_suffix:
+            noisy_list = glob(os.path.join(noisy_dir, '**', f'*{self.noisy_suffix}.wav'), recursive=True)
+            noisy_list += glob(os.path.join(noisy_dir, '**', f'*{self.noisy_suffix}.flac'), recursive=True)
+        else:
+            noisy_list = glob(os.path.join(noisy_dir, '**', '*.wav'), recursive=True)
+            noisy_list += glob(os.path.join(noisy_dir, '**', '*.flac'), recursive=True)
         noisy_list.sort(key=lambda p: relpath(p, start=noisy_dir))
         self.list_noisy = noisy_list
 

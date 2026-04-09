@@ -1019,5 +1019,181 @@ class EngineInfer(object):
             self._inference(self.dataloaders['test'])
             
         logger.info(f"Inference and file writing for {self.config['dataset_test']['testset_key']} dataset done!")
-        
-        
+
+
+class EngineInferFolder(object):
+    """
+    Folder-based inference engine with chunk processing.
+    Reads all .wav files from input_dir, enhances them chunk-by-chunk, saves to output_dir.
+    """
+
+    def __init__(self, args, config, model, gpuid, device):
+        self.args = args
+        self.config = config
+        self.gpuid = gpuid
+        self.device = device
+        self.model = model.to(self.device)
+
+        # Sample rate from config
+        testset_key = config['dataset_test']['testset_key']
+        self.fs_src = config['dataset_test'][testset_key]['sample_rate_src']
+        self.fs_in  = config['dataset_test'][testset_key]['sample_rate_in']
+
+        # STFT setup
+        self.stft, self.istft = {}, {}
+        self.fs_list = config['fs_list']
+        for fs in self.fs_list:
+            frame_len = int(config['stft']['frame_length'] * int(fs) / 1000)
+            frame_hop = int(config['stft']['frame_shift'] * int(fs) / 1000)
+            self.stft[fs]  = util_stft.STFT(frame_len, frame_hop, device=self.device, normalize=True)
+            self.istft[fs] = util_stft.iSTFT(frame_len, frame_hop, device=self.device, normalize=True)
+        self.out_F = int(config['stft']['frame_length'] * int(self.fs_src) / 1000) // 2 + 1
+
+        # Chunk settings (seconds)
+        self.chunk_sec  = getattr(args, 'chunk_sec',  4.0)
+        self.overlap_sec = getattr(args, 'overlap_sec', 0.5)
+
+        # Load checkpoint
+        self.train_phase = config["train_phase"] + '_' + config["dataset_phase"]
+        config_name = getattr(args, 'config', 'baseline.yaml')
+        log_base = f"log/log_{self.train_phase}_{config_name}"
+        optim_cls = getattr(torch.optim, config["engine"]["optimizer"]["name"])
+        self.main_optimizer = optim_cls(self.model.parameters(),
+                                        **config["engine"]["optimizer"].get(
+                                            config["engine"]["optimizer"]["name"], {}))
+        self.chkp_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), log_base, "weights")
+        os.makedirs(self.chkp_path, exist_ok=True)
+        self.start_epoch = util_engine.load_last_checkpoint_n_get_epoch(
+            self.chkp_path, self.model, self.main_optimizer, location=self.device)
+
+        # I/O directories
+        self.input_dir  = args.input_dir
+        self.output_dir = args.output_dir if args.output_dir else os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "inference_wav", "folder_output")
+        os.makedirs(self.output_dir, exist_ok=True)
+        logger.info(f"[FolderInfer] input_dir : {self.input_dir}")
+        logger.info(f"[FolderInfer] output_dir: {self.output_dir}")
+        logger.info(f"[FolderInfer] chunk={self.chunk_sec}s  overlap={self.overlap_sec}s")
+
+    # ------------------------------------------------------------------
+    def _enhance_wav(self, wav: torch.Tensor, fs_in: int) -> torch.Tensor:
+        """
+        Enhance a single-channel waveform using chunk-based processing.
+        wav  : (L,)  float32 tensor on CPU
+        Returns enhanced waveform (L,) float32 tensor on CPU.
+        """
+        chunk_len   = int(self.chunk_sec   * fs_in)
+        overlap_len = int(self.overlap_sec * fs_in)
+        hop_len     = chunk_len - overlap_len
+        total_len   = wav.shape[0]
+
+        if total_len <= chunk_len:
+            # Short clip: process as-is
+            return self._process_chunk(wav.unsqueeze(0).to(self.device), fs_in).squeeze(0).cpu()
+
+        out_wav  = torch.zeros(total_len, dtype=torch.float32)
+        weight   = torch.zeros(total_len, dtype=torch.float32)
+
+        # Build Hann-based fade window for smooth overlap-add
+        fade = torch.ones(chunk_len, dtype=torch.float32)
+        fade[:overlap_len]  = torch.linspace(0.0, 1.0, overlap_len)
+        fade[-overlap_len:] = torch.linspace(1.0, 0.0, overlap_len)
+
+        start = 0
+        while start < total_len:
+            end = min(start + chunk_len, total_len)
+            chunk = wav[start:end]
+
+            # Zero-pad if the last chunk is shorter
+            pad_len = chunk_len - chunk.shape[0]
+            if pad_len > 0:
+                chunk = torch.nn.functional.pad(chunk, (0, pad_len))
+
+            enhanced_chunk = self._process_chunk(
+                chunk.unsqueeze(0).to(self.device), fs_in).squeeze(0).cpu()  # (chunk_len,)
+
+            # Trim to actual length if last chunk
+            actual_len = end - start
+            w = fade[:actual_len] if pad_len > 0 else fade
+
+            out_wav[start:end] += enhanced_chunk[:actual_len] * w
+            weight[start:end]  += w
+
+            start += hop_len
+
+        # Normalize by accumulated weight (avoid div-by-zero at boundaries)
+        weight = weight.clamp(min=1e-8)
+        out_wav = out_wav / weight
+        return out_wav
+
+    # ------------------------------------------------------------------
+    def _process_chunk(self, wav_chunk: torch.Tensor, fs_in: int) -> torch.Tensor:
+        """
+        wav_chunk : (1, L) on device
+        Returns   : (1, L) enhanced on device
+        """
+        stft_key = str(fs_in)
+        # Find the nearest supported fs key
+        if stft_key not in self.stft:
+            stft_key = min(self.fs_list, key=lambda k: abs(int(k) - fs_in))
+
+        X = self.stft[stft_key](wav_chunk, cplx=True)          # (1, F, T)
+        model_input = torch.stack([torch.real(X), torch.imag(X)], dim=-1)  # (1, F, T, 2)
+        comp = self.model(model_input, out_F=self.out_F)        # (1, F, T, 2)
+        out  = torch.complex(comp[..., 0], comp[..., 1])        # (1, F, T)
+        out_wav = self.istft[str(self.fs_src)](out, cplx=True, squeeze=False)  # (1, L)
+        return out_wav
+
+    # ------------------------------------------------------------------
+    def _resample_if_needed(self, wav: torch.Tensor, orig_fs: int) -> tuple:
+        """Return (wav_resampled, fs_in) where fs_in is the model input rate."""
+        fs_in = self.fs_in if self.fs_in else orig_fs
+        if orig_fs != fs_in:
+            wav = torch_resample(wav, orig_fs, fs_in)
+        return wav, fs_in
+
+    # ------------------------------------------------------------------
+    @logger_wraps()
+    def run_infer_folder(self):
+        """Process all .wav files in input_dir and write results to output_dir, preserving subdirectory structure."""
+        from glob import glob as _glob
+        wav_files = sorted(_glob(os.path.join(self.input_dir, '**', '*.wav'), recursive=True))
+        wav_files += sorted(_glob(os.path.join(self.input_dir, '**', '*.flac'), recursive=True))
+        if not wav_files:
+            logger.warning(f"No .wav/.flac files found in {self.input_dir}")
+            return
+
+        self.model.eval()
+        pbar = tqdm(total=len(wav_files), unit='file',
+                    bar_format='{l_bar}{bar:5}{r_bar}{bar:-10b}',
+                    colour="CYAN", dynamic_ncols=True)
+
+        with torch.inference_mode():
+            for in_path in wav_files:
+                rel_path = os.path.relpath(in_path, self.input_dir)
+                out_path = os.path.join(self.output_dir, rel_path)
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+                try:
+                    wav_np, orig_fs = sf.read(in_path, dtype='float32')
+                    if wav_np.ndim > 1:          # take first channel if multi-ch
+                        wav_np = wav_np[:, 0]
+                    wav = torch.from_numpy(wav_np)
+
+                    wav, fs_in = self._resample_if_needed(wav, orig_fs)
+                    enhanced   = self._enhance_wav(wav, fs_in)
+
+                    # Normalise peak to avoid clipping
+                    peak = torch.max(torch.abs(enhanced))
+                    if peak > 1e-8:
+                        enhanced = enhanced / peak
+
+                    sf.write(out_path, enhanced.numpy(), self.fs_src)
+                    logger.debug(f"  saved: {out_path}")
+
+                except Exception as e:
+                    logger.error(f"Failed on {in_path}: {e}")
+
+                pbar.update(1)
+        pbar.close()
+        logger.info(f"[FolderInfer] Done. {len(wav_files)} files → {self.output_dir}")
