@@ -181,5 +181,15 @@ models/*/wav_out
 data/RIR_filter_v9
 data/valid_sample
 models/*/inference_wav
-
 demo
+
+# Temporary data, logs, archives
+SimData_tmp/
+data/moving_selected_*
+data/sample_selected_*
+log_tmp*
+
+# Reports, notebooks, legacy configs
+.claude_reports/
+workbench.ipynb
+models/*/configs/.legacy/
