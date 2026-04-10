@@ -67,7 +67,6 @@ class Engine(object):
         # optim, scheduler, STFT configuration
         optim_cls = getattr(torch.optim, self.config["engine"]["optimizer"]["name"])
         sched_cls = getattr(torch.optim.lr_scheduler, self.config["engine"]["scheduler"]["name"])
-        self.sample_file_list = config['engine'].get('sample_validation', [])
 
 
         # load enhance model
@@ -424,28 +423,6 @@ class Engine(object):
 
     def logging_sample_wav(self, out, noisy_stft, target, fs_noisy, fs_target, epoch):
 
-        def load_real_sample_infer(sample_file, idx):
-            sample_x, fs = librosa.load(sample_file, sr=None)
-            if fs > 16000:
-                sample_x = librosa.resample(sample_x, orig_sr=fs, target_sr=16000)
-                fs = 16000
-            sample_x = torch.tensor(sample_x)[None] # 1, N
-            sample_stft = self.stft[str(fs)](sample_x.to(self.device), cplx=True) # B, F, T
-            sample_input = torch.stack([torch.real(sample_stft), torch.imag(sample_stft)],dim=-1) # B, T, F, 2
-            sample_output = self.model(sample_input.to(self.device), out_F=self.out_F)
-            sample_output = torch.complex(sample_output[...,0], sample_output[...,1])  # [M, F, T]
-            sample_estim = self.istft[str(self.fs_src)](sample_output, cplx=True, squeeze=True)
-
-            if fs < self.fs_src:
-                sample_x = librosa.resample(sample_x.cpu().data.numpy(), orig_sr=fs, target_sr=self.fs_src)
-                sample_x = torch.tensor(sample_x) # 1, N
-
-            self.writer_src.log_wav2spec(sample_x[0], "sample_noisy_distort_"+str(idx), epoch)
-            self.writer_src.log_audio(sample_x[0], 'sample_noisy_distort_audio_'+str(idx), epoch)
-
-            self.writer_src.log_wav2spec(sample_estim, "sample_enhance_out_"+str(idx), epoch)
-            self.writer_src.log_audio(sample_estim, 'sample_estim_enhance_audio_'+str(idx), epoch)
-
         noisy = self.istft[str(fs_noisy)](noisy_stft[0]+1.0e-8, cplx=True, squeeze=True) # B, F, T
         noisy = librosa.resample(noisy.cpu().data.numpy(), orig_sr=fs_noisy, target_sr=self.fs_src)
         noisy = torch.tensor(noisy) # 1, N
@@ -460,10 +437,6 @@ class Engine(object):
         target = torch_resample(target, orig_freq=fs_target, new_freq=self.fs_src, lowpass_filter_width=32, rolloff=0.98) if fs_target != self.fs_src else target
         self.writer_src.log_wav2spec(target[0], "clean", epoch)
         self.writer_src.log_audio(target[0], 'clean_audio', epoch)
-
-        # check real-recorded sample
-        for idx, sample_ in enumerate(self.sample_file_list):
-            load_real_sample_infer(sample_, idx)
 
 
 
