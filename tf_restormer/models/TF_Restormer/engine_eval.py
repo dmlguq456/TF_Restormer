@@ -8,9 +8,9 @@ from loguru import logger
 from tqdm import tqdm
 import torchaudio.transforms as T
 from torch.utils.data import DataLoader
-from tf_restormer.utils import util_engine, util_stft, util_metric, util_writer, util_wvmos, util_dnsmos, util_sBERTscore
+from tf_restormer.utils import util_engine, util_stft, util_writer
+from tf_restormer.utils.metrics import compute_metric
 from tf_restormer.utils.decorators import logger_wraps
-from .loss import SSL_FM_Loss, MS_STFT_Gen_SC_Loss, Time_Domain_L1, UTMOS_Loss
 
 
 # @logger_wraps()
@@ -37,19 +37,20 @@ class EngineEval(object):
                                     resampling_method='sinc_interp_hann',
                                     lowpass_filter_width=32,
                                     rolloff=0.98).to(self.device)
-        # loss configuration
+        # loss configuration (lazy import — optional train extras)
         self.train_phase = config["train_phase"] + '_' + config["dataset_phase"]
-        self.w = config["engine"][self.train_phase]["loss_weight"]
-        self.loss_t = Time_Domain_L1(**config["engine"][self.train_phase]["loss_time"], device=self.device)
-        self.loss = MS_STFT_Gen_SC_Loss(**config["engine"][self.train_phase]["loss_enhance"], device=self.device)
-        self.loss_fm = SSL_FM_Loss(**config["engine"][self.train_phase]["loss_rep"], device=self.device)
-        # MOS metrics
-        self.utmos = UTMOS_Loss(16000, device=self.device)
-        self.wvmos = util_wvmos.Wav2Vec2MOS(device=self.device)
-        # speechBERTscore
-        self.bleu_scorer = util_sBERTscore.SpeechMetricCalculator(metric_type='bleu', device=self.device)
-        self.bert_scorer = util_sBERTscore.SpeechMetricCalculator(metric_type='bertscore', device=self.device)
-        self.token_dist_scorer = util_sBERTscore.SpeechMetricCalculator(metric_type='tokendistance', device=self.device)
+        self._loss_modules_available = False
+        try:
+            from .loss import SSL_FM_Loss, MS_STFT_Gen_SC_Loss, Time_Domain_L1
+            self.w = config["engine"][self.train_phase]["loss_weight"]
+            self.loss_t = Time_Domain_L1(**config["engine"][self.train_phase]["loss_time"], device=self.device)
+            self.loss = MS_STFT_Gen_SC_Loss(**config["engine"][self.train_phase]["loss_enhance"], device=self.device)
+            self.loss_fm = SSL_FM_Loss(**config["engine"][self.train_phase]["loss_rep"], device=self.device)
+            self._loss_modules_available = True
+        except ImportError as e:
+            logger.warning(f"Loss modules not available: {e}. Loss computation will be skipped.")
+        except KeyError as e:
+            logger.warning(f"Loss config key missing: {e}. Loss computation will be skipped (eval-only config?).")
 
         # optim, scheduler, STFT configuration
         optim_cls = getattr(torch.optim, self.config["engine"]["optimizer"]["name"])
@@ -106,10 +107,10 @@ class EngineEval(object):
 
     def _update_metrics(self, metrics, key, value_in=None, value_out=None):
         if key in self.metrics_key:
-            if value_in != None:
+            if value_in is not None:
                 metrics[f'{key}_i'] += value_in
                 metrics[f'{key}_i_2'] += value_in**2
-            if value_out != None:
+            if value_out is not None:
                 metrics[f'{key}'] += value_out
                 metrics[f'{key}_2'] += value_out**2
 
@@ -185,71 +186,76 @@ class EngineEval(object):
                     src_wav_norm = src_wav_norm[...,:min_len_16k]
 
 
-                # ------------- Non-intrusive MOS metrics  ----------- #
-                if 'wvmos' in self.metrics_key:
-                    if target is not None:
-                        cur_wvmos_src = self.wvmos(src_wav_norm)
-                        self._update_metrics(metrics, 'wvmos_src', None, cur_wvmos_src.item())
-                    cur_wvmos_in = self.wvmos(in_wav_norm).item() if self.input_eval else None
-                    cur_wvmos = self.wvmos(out_wav_norm).item() if self.output_eval else None
-                    self._update_metrics(metrics, 'wvmos', cur_wvmos_in, cur_wvmos)
-
-                if 'utmos' in self.metrics_key:
-                    if target is not None:
-                        cur_utmos_src = self.utmos.mos(src_wav_norm)
-                        self._update_metrics(metrics, 'utmos_src', None, cur_utmos_src.item())
-                    cur_utmos_in = self.utmos.mos(in_wav_norm).item() if self.input_eval else None
-                    cur_utmos = self.utmos.mos(out_wav_norm).item() if self.output_eval else None
-                    self._update_metrics(metrics, 'utmos', cur_utmos_in, cur_utmos)
-
-                if 'dnsmos' in self.metrics_key:
-                    if target is not None:
-                        cur_dnsmos_src = util_dnsmos.run(src_wav_norm.squeeze().cpu().numpy(), 16000)
-                        self._update_metrics(metrics, 'dnsmos_src', None, cur_dnsmos_src)
-                    cur_dnsmos_in = util_dnsmos.run(in_wav_norm.squeeze().cpu().numpy(), 16000)['ovrl_mos'] if self.input_eval else None
-                    cur_dnsmos = util_dnsmos.run(out_wav_norm.squeeze().cpu().numpy(), 16000)['ovrl_mos'] if self.output_eval else None
-                    self._update_metrics(metrics, 'dnsmos', cur_dnsmos_in, cur_dnsmos)
+                # ------------- Non-intrusive / neural MOS metrics  ----------- #
+                # wvmos, utmos, dnsmos, dnsmos_sig, dnsmos_bak, nisqa
+                # Use z-normalized 16kHz variants (in_wav_norm, out_wav_norm, src_wav_norm)
+                for key in ('wvmos', 'utmos', 'dnsmos', 'dnsmos_sig', 'dnsmos_bak', 'nisqa'):
+                    if key in self.metrics_key:
+                        if target is not None:
+                            # [BUGFIX] _src values bypass _update_metrics (wvmos_src etc.
+                            # are not in self.metrics_key, so _update_metrics would silently drop them)
+                            val_src = compute_metric(key, src_wav_norm, fs=16000, device=self.device)
+                            val_src = val_src.item() if hasattr(val_src, 'item') else float(val_src)
+                            metrics[f'{key}_src'] += val_src
+                            metrics[f'{key}_src_2'] += val_src ** 2
+                        val_in = compute_metric(key, in_wav_norm, fs=16000, device=self.device) if self.input_eval else None
+                        if val_in is not None:
+                            val_in = val_in.item() if hasattr(val_in, 'item') else float(val_in)
+                        val_out = compute_metric(key, out_wav_norm, fs=16000, device=self.device) if self.output_eval else None
+                        if val_out is not None:
+                            val_out = val_out.item() if hasattr(val_out, 'item') else float(val_out)
+                        self._update_metrics(metrics, key, val_in, val_out)
 
                 # ------------- Intrusive Metrics ----------- #
                 if target is not None:
                     # ----------------- Wideband (16kHz) metrics ----------------- #
-                    if 'pesq' in self.metrics_key:
-                        cur_pesq_wb_in = util_metric.run_metric(in_wav_16k, src_wav_16k, 'PESQ', 16000) if self.input_eval else None
-                        cur_pesq_wb = util_metric.run_metric(out_wav_16k, src_wav_16k, 'PESQ', 16000) if self.output_eval else None
-                        self._update_metrics(metrics, 'pesq', cur_pesq_wb_in, cur_pesq_wb)
-                    if 'stoi' in self.metrics_key:
-                        cur_stoi_in = util_metric.run_metric(in_wav_16k, src_wav_16k, 'STOI', 16000) if self.input_eval else None
-                        cur_stoi = util_metric.run_metric(out_wav_16k, src_wav_16k, 'STOI', 16000) if self.output_eval else None
-                        self._update_metrics(metrics, 'stoi', cur_stoi_in, cur_stoi)
+                    for key in ('pesq', 'stoi'):
+                        if key in self.metrics_key:
+                            val_in = compute_metric(key, in_wav_16k, src_wav_16k, 16000) if self.input_eval else None
+                            val_out = compute_metric(key, out_wav_16k, src_wav_16k, 16000) if self.output_eval else None
+                            self._update_metrics(metrics, key, val_in, val_out)
 
                     # ----------------- Fullband (upto 48kHz) metrics ----------------- #
-                    if 'lsd' in self.metrics_key:
-                        cur_lsd_in = util_metric.run_metric(in_wav, src_wav, 'LSD', self.fs_src) if self.input_eval else None
-                        cur_lsd = util_metric.run_metric(out_wav, src_wav, 'LSD', self.fs_src) if self.output_eval else None
-                        self._update_metrics(metrics, 'lsd', cur_lsd_in, cur_lsd)
-                    if 'sdr' in self.metrics_key:
-                        cur_sdr_in = util_metric.run_metric(in_wav, src_wav, 'SNR', self.fs_src).item() if self.input_eval else None
-                        cur_sdr = util_metric.run_metric(out_wav, src_wav, 'SNR', self.fs_src).item() if self.output_eval else None
-                        self._update_metrics(metrics, 'sdr', cur_sdr_in, cur_sdr)
-                    if 'mcd' in self.metrics_key:
-                        cur_mcd_in = util_metric.run_metric(in_wav, src_wav, 'MCD', self.fs_src) if self.input_eval else None
-                        cur_mcd = util_metric.run_metric(out_wav, src_wav, 'MCD', self.fs_src) if self.output_eval else None
-                        self._update_metrics(metrics, 'mcd', cur_mcd_in, cur_mcd)
+                    for key in ('lsd', 'sdr', 'mcd'):
+                        if key in self.metrics_key:
+                            val_in = compute_metric(key, in_wav, src_wav, self.fs_src) if self.input_eval else None
+                            val_out = compute_metric(key, out_wav, src_wav, self.fs_src) if self.output_eval else None
+                            # SDR returns tensor, need .item()
+                            if val_in is not None and hasattr(val_in, 'item'):
+                                val_in = val_in.item()
+                            if val_out is not None and hasattr(val_out, 'item'):
+                                val_out = val_out.item()
+                            self._update_metrics(metrics, key, val_in, val_out)
 
                     # ----------------- Downstream dependent metrics (16kHz Only) ----------------- #
-                    #  BLEU, BERTscore, Token distance
+                    #  BLEU, BERTscore, Token distance — pass device kwarg for GPU model loading
                     if 'bleu' in self.metrics_key:
-                        bleu_in = self.bleu_scorer.score(src_wav_16k, in_wav_16k) if self.input_eval else None
-                        bleu_out = self.bleu_scorer.score(src_wav_16k, out_wav_16k) if self.output_eval else None
+                        bleu_in = compute_metric('bleu', in_wav_16k, src_wav_16k, 16000, device=self.device) if self.input_eval else None
+                        bleu_out = compute_metric('bleu', out_wav_16k, src_wav_16k, 16000, device=self.device) if self.output_eval else None
                         self._update_metrics(metrics, 'bleu', bleu_in, bleu_out)
                     if 'bertscore' in self.metrics_key:
-                        bert_in, _, _ = self.bert_scorer.score(src_wav_16k, in_wav_16k) if self.input_eval else (None, None, None)
-                        bert_out, _, _ = self.bert_scorer.score(src_wav_16k, out_wav_16k) if self.output_eval else (None, None, None)
+                        bert_in_result = compute_metric('bertscore', in_wav_16k, src_wav_16k, 16000, device=self.device) if self.input_eval else (None, None, None)
+                        bert_out_result = compute_metric('bertscore', out_wav_16k, src_wav_16k, 16000, device=self.device) if self.output_eval else (None, None, None)
+                        bert_in = bert_in_result[0] if isinstance(bert_in_result, tuple) else bert_in_result
+                        bert_out = bert_out_result[0] if isinstance(bert_out_result, tuple) else bert_out_result
                         self._update_metrics(metrics, 'bertscore', bert_in, bert_out)
                     if 'tokendist' in self.metrics_key:
-                        tokendist_in = self.token_dist_scorer.score(src_wav_16k, in_wav_16k) if self.input_eval else None
-                        tokendist_out = self.token_dist_scorer.score(src_wav_16k, out_wav_16k) if self.output_eval else None
+                        tokendist_in = compute_metric('tokendist', in_wav_16k, src_wav_16k, 16000, device=self.device) if self.input_eval else None
+                        tokendist_out = compute_metric('tokendist', out_wav_16k, src_wav_16k, 16000, device=self.device) if self.output_eval else None
                         self._update_metrics(metrics, 'tokendist', tokendist_in, tokendist_out)
+
+                    # ----------------- ASR-based error rate metrics (16kHz Only) ----------------- #
+                    #  wer_whisper, wer_w2v, cer_whisper — return (err, ref_len) tuples for accumulation
+                    for key in ('wer_whisper', 'wer_w2v', 'cer_whisper'):
+                        if key in self.metrics_key:
+                            if self.input_eval:
+                                res_in = compute_metric(key, in_wav_16k, src_wav_16k, 16000, device=self.device)
+                                metrics[f'{key}_i_err'] += res_in[0]
+                                metrics[f'{key}_i_ref'] += res_in[1]
+                            if self.output_eval:
+                                res_out = compute_metric(key, out_wav_16k, src_wav_16k, 16000, device=self.device)
+                                metrics[f'{key}_err'] += res_out[0]
+                                metrics[f'{key}_ref'] += res_out[1]
 
                 # save randomly chosen sample to writer
                 if self.output_eval and self.input_eval:
@@ -261,11 +267,13 @@ class EngineEval(object):
                 pbar.update(1)
 
                 #! --------------- metrics for output ---------------- !#
-                if (target is not None) and self.output_eval:
+                if (target is not None) and self.output_eval and self._loss_modules_available:
                     metrics['loss_se'] += self.loss(out_wav, src_wav, epoch=epoch).item()
                     metrics['loss_time'] += self.loss_t(out_wav, src_wav).item()
                     metrics['loss_rep'] += self.loss_fm(out_wav, src_wav).item()
-                    # --- Calculate mean and confidence for display ---
+
+                # --- Calculate mean and confidence for display ---
+                if (target is not None) and self.output_eval and self._loss_modules_available:
                     dict_loss = {
                         'L_time': metrics['loss_time']/n_batch,
                         'L_se': metrics['loss_se']/n_batch,
@@ -284,6 +292,21 @@ class EngineEval(object):
                     for suffix in suffixes:
                         if key + suffix in metrics:
                             dict_metric_mean[key + suffix] = metrics[key + suffix] / n_batch
+
+                # ASR metrics are accumulated as (err, ref_len) pairs.
+                # Compute rate = sum(err) / sum(ref_len) and add to dict_metric_mean.
+                for asr_key in ('wer_whisper', 'wer_w2v', 'cer_whisper'):
+                    if asr_key in self.metrics_key:
+                        for err_sfx, ref_sfx, out_sfx in [
+                            ('_err',   '_ref',   ''),
+                            ('_i_err', '_i_ref', '_i'),
+                        ]:
+                            err_k = asr_key + err_sfx
+                            ref_k = asr_key + ref_sfx
+                            if err_k in metrics and metrics[ref_k] > 0:
+                                dict_metric_mean[asr_key + out_sfx] = (
+                                    metrics[err_k] / metrics[ref_k]
+                                )
 
                 def cfd_95(x, x_2, n):
                     if n == 0: return 0.0
@@ -355,9 +378,10 @@ class EngineEval(object):
 
             # --- Logging to tensorboard ---
             if self.config['dataset_test'].get('tensorboard_logging', True):
-                # Log loss values
-                loss_log_dict = {'STFT_L1': loss_dict['L_se'], 'Time_L1': loss_dict['L_time'], 'SSL_rep': loss_dict['L_rep']}
-                self.writer_src.add_scalars(f"Loss_Test_{self.train_phase}", loss_log_dict, self.start_epoch)
+                # Log loss values (only when loss modules were available)
+                if self._loss_modules_available:
+                    loss_log_dict = {'STFT_L1': loss_dict['L_se'], 'Time_L1': loss_dict['L_time'], 'SSL_rep': loss_dict['L_rep']}
+                    self.writer_src.add_scalars(f"Loss_Test_{self.train_phase}", loss_log_dict, self.start_epoch)
 
                 # Log mean metrics
                 # Filter out keys that are not needed for tensorboard logging

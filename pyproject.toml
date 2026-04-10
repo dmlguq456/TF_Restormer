@@ -31,15 +31,10 @@ cu126 = ["torch>=2.6", "torchaudio>=2.6"]
 cu128 = ["torch>=2.6", "torchaudio>=2.6"]
 cu130 = ["torch>=2.6", "torchaudio>=2.6"]
 mamba = ["causal-conv1d>=1.5.2", "mamba-ssm>=2.2.5"]
-metrics-intrusive = ["pesq", "pystoi", "mir-eval", "pysptk", "pyworld", "fastdtw"]
+metrics-intrusive = ["pesq", "pystoi", "mir-eval", "pysptk", "pyworld", "fastdtw", "joblib"]
 metrics-nonintrusive = ["onnxruntime"]
-metrics-neural = [
-    "transformers",
-    "utmosv2",
-    "torch-pesq",
-    "torch-stoi",
-]
-metrics-semantic = ["nltk", "levenshtein", "jellyfish"]
+metrics-neural = ["transformers"]
+metrics-semantic = ["transformers", "nltk", "levenshtein", "jellyfish", "joblib"]
 metrics-all = [
     "tf-restormer[metrics-intrusive,metrics-nonintrusive,metrics-neural,metrics-semantic]",
 ]
@@ -47,8 +42,13 @@ train = [
     "tensorboardX", "wandb", "torchinfo", "ptflops", "thop",
     "colorednoise", "pedalboard", "matplotlib", "seaborn",
     "pandas",
+    "transformers",    # for SSL_FM_Loss (Wav2Vec2) and loss.py imports
+    "torch-pesq",      # differentiable PESQ loss
+    "torch-stoi",      # differentiable STOI loss
+    "utmosv2",         # UTMOSv2 loss
     "tf-restormer[metrics-all]",
 ]
+dev = ["tf-restormer[train]", "pytest"]
 # IMPORTANT: Always combine with an accelerator extra.
 # Correct: uv sync --extra cu124 --extra mamba --extra train
 # Correct: uv sync --extra cu126 --extra mamba --extra train

@@ -1,24 +1,10 @@
 from __future__ import annotations
 
 import os
+import random
 import torch
 import numpy as np
 from loguru import logger
-
-from torchinfo import summary as summary_
-from ptflops import get_model_complexity_info
-from thop import profile
-
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
-import numpy as np
-import seaborn as sns
-import torch
-# from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
-from scipy.stats import zscore
-import pandas as pd
-from scipy.spatial.distance import cosine
-import random
 
 
 
@@ -240,25 +226,42 @@ def print_parameters_count(model):
     logger.info(f"Total parameters: {(total_parameters / 1e6):.2f}M")
 
 def model_params_mac_summary(model: torch.nn.Module, input_shape: tuple, metrics: list[str], device: torch.device) -> None:
-    """Log model MACs and parameter counts using multiple profilers."""
-    # ptflpos
+    """Log model MACs and parameter counts using multiple profilers.
+
+    Each profiler is independently optional: if the package is not installed
+    an ImportError is caught and a warning is logged instead of crashing.
+    This allows eval mode to run without train-only extras.
+    """
+    # ptflops
     if 'ptflops' in metrics:
-        MACs_ptflops, params_ptflops = get_model_complexity_info(model, (*input_shape,), print_per_layer_stat=False, verbose=False) # (num_samples,)
-        MACs_ptflops, params_ptflops = MACs_ptflops.replace(" MMac", ""), params_ptflops.replace(" M", "")
-        logger.info(f"ptflops: MACs: {MACs_ptflops}, Params: {params_ptflops}")
+        try:
+            from ptflops import get_model_complexity_info
+            MACs_ptflops, params_ptflops = get_model_complexity_info(model, (*input_shape,), print_per_layer_stat=False, verbose=False) # (num_samples,)
+            MACs_ptflops, params_ptflops = MACs_ptflops.replace(" MMac", ""), params_ptflops.replace(" M", "")
+            logger.info(f"ptflops: MACs: {MACs_ptflops}, Params: {params_ptflops}")
+        except ImportError:
+            logger.info("Skipping ptflops profiling (not installed).")
 
     # thop
     if 'thop' in metrics:
-        input = torch.randn(1, *input_shape).to(device)
-        MACs_thop, params_thop = profile(model, inputs=input, verbose=False)
-        MACs_thop, params_thop = MACs_thop/1e9, params_thop/1e6
-        logger.info(f"thop: MACs: {MACs_thop} GMac, Params: {params_thop}")
-    
+        try:
+            from thop import profile
+            input = torch.randn(1, *input_shape).to(device)
+            MACs_thop, params_thop = profile(model, inputs=input, verbose=False)
+            MACs_thop, params_thop = MACs_thop/1e9, params_thop/1e6
+            logger.info(f"thop: MACs: {MACs_thop} GMac, Params: {params_thop}")
+        except ImportError:
+            logger.info("Skipping thop profiling (not installed).")
+
     # torchinfo
     if 'torchinfo' in metrics:
-        model_profile = summary_(model, input_size=(1, *input_shape), verbose=0, device=device)
-        MACs_torchinfo, params_torchinfo = model_profile.total_mult_adds/1e9, model_profile.total_params/1e6
-        logger.info(f"torchinfo: MACs: {MACs_torchinfo} GMac, Params: {params_torchinfo}")
+        try:
+            from torchinfo import summary as summary_
+            model_profile = summary_(model, input_size=(1, *input_shape), verbose=0, device=device)
+            MACs_torchinfo, params_torchinfo = model_profile.total_mult_adds/1e9, model_profile.total_params/1e6
+            logger.info(f"torchinfo: MACs: {MACs_torchinfo} GMac, Params: {params_torchinfo}")
+        except ImportError:
+            logger.info("Skipping torchinfo profiling (not installed).")
 
 
     # MEASURE PERFORMANCE
