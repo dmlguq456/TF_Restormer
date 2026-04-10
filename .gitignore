@@ -200,3 +200,5 @@ log_tmp*
 workbench.ipynb
 models/*/configs/.legacy/
 tf_restormer/models/*/configs/.legacy/
+# Model checkpoints
+tf_restormer/checkpoints/
