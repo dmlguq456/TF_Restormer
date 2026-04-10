@@ -1,0 +1,156 @@
+# Testset catalog — shared across all config variants
+# Paths use ${ENV_VAR} syntax resolved by _config.expand_env_vars()
+
+VCTK_DEMAND: # simple denoising subtask
+    metrics: ['pesq', 'stoi', 'lsd', 'sdr', 'mcd',
+              'wvmos', 'utmos', 'dnsmos',
+              'bleu', 'bertscore', 'tokendist']
+    sample_rate_src: 16000
+    sample_rate_in: 16000
+    clean_dir: "${VCTK_DEMAND_DB_ROOT}/clean_testset_wav"
+    noisy_dir: "${VCTK_DEMAND_DB_ROOT}/noisy_testset_wav"
+    random_sample_idx: [10, 20, 30, 40, 50]
+
+VCTK_SR: # simple super-resolution subtask
+    metrics: ['lsd', 'mcd', 'utmos']
+    sample_rate_src: 44100
+    sample_rate_in: 8000
+    clean_dir: "${VCTK_CORPUS_DB_ROOT}/test"
+    noisy_dir: "${VCTK_CORPUS_DB_ROOT}/test"
+    random_sample_idx: [10, 20, 30, 40, 50]
+
+UNIVERSE: # general speech restoration
+    metrics: ['pesq', 'stoi', 'lsd', 'sdr', 'mcd',
+              'wvmos', 'utmos', 'dnsmos',
+              'bleu', 'bertscore', 'tokendist']
+    sample_rate_src: 16000
+    sample_rate_in: 16000
+    clean_dir: "${UNIVERSE_DB_ROOT}/target"
+    noisy_dir: "${UNIVERSE_DB_ROOT}/input"
+    random_sample_idx: [10, 20, 30, 40, 50]
+
+VoxCeleb: # Real datatest
+    metrics: ['wvmos', 'utmos', 'dnsmos']
+    sample_rate_src: 16000
+    sample_rate_in: 16000 # None means that the model can process various input sampling rates / # ! Must be none not None.
+    clean_dir: null
+    noisy_dir: "${VOXCELEB_SAMPLE_DB_ROOT}"
+    random_sample_idx: [10, 20, 30, 40, 50]
+
+URGENT2025:
+    # metrics: ['bertscore']
+    metrics: ['pesq', 'lsd', 'sdr', 'mcd', 'utmos', 'dnsmos', 'bertscore', 'nisqa']
+    # metrics: ['pesq', 'lsd', 'sdr', 'mcd',
+    #           'wvmos', 'utmos', 'dnsmos',
+    #           'bertscore']
+    sample_rate_src: null
+    sample_rate_in: null
+    clean_dir: "/home/nas/DB/URGENT2025_nonblind_test/clean"
+    noisy_dir: "/home/nas/DB/URGENT2025_nonblind_test//noisy"  # NOTE: double slash may be a typo
+    random_sample_idx: [10, 20, 30, 40, 50]
+
+URGENT2025_blind:
+    # metrics: ['bertscore']
+    metrics: ['utmos', 'dnsmos', 'nisqa']
+    # metrics: ['pesq', 'lsd', 'sdr', 'mcd',
+    #           'wvmos', 'utmos', 'dnsmos',
+    #           'bertscore']
+    sample_rate_src: null
+    sample_rate_in: null
+    clean_dir: null
+    noisy_dir: "/home/nas/DB/URGENT_blind_test/noisy"
+    random_sample_idx: [10, 20, 30, 40, 50]
+
+DNS_2020_no_reverb:
+    metrics: ['sdr', 'pesq', 'dnsmos', 'dnsmos_sig', 'dnsmos_bak']
+    sample_rate_src: 16000
+    sample_rate_in: 16000
+    clean_dir: "/home/Uihyeop/nas_Uihyeop/DB/DNS_2020/DNS-Challenge/datasets/test_set/synthetic/no_reverb/clean"
+    noisy_dir: "/home/Uihyeop/nas_Uihyeop/DB/DNS_2020/DNS-Challenge/datasets/test_set/synthetic/no_reverb/noisy_harder"
+    random_sample_idx: [10, 20, 30, 40, 50]
+
+DNS_2020_with_reverb:
+    metrics: ['dnsmos', 'dnsmos_sig', 'dnsmos_bak']
+    sample_rate_src: 16000
+    sample_rate_in: 16000
+    clean_dir: "/home/Uihyeop/nas_Uihyeop/DB/DNS_2020/DNS-Challenge/datasets/test_set/synthetic/with_reverb/clean"
+    noisy_dir: "/home/Uihyeop/nas_Uihyeop/DB/DNS_2020/DNS-Challenge/datasets/test_set/synthetic/with_reverb/noisy"
+    random_sample_idx: [10, 20, 30, 40, 50]
+
+REVERB:
+    metrics: ['pesq', 'stoi', 'sdr']
+    sample_rate_src: 16000
+    sample_rate_in: 16000
+    clean_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_et/data/cln_test"
+    noisy_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_et/data/far_test_noisy"
+    random_sample_idx: [10, 20, 30, 40, 50]
+
+REVERB_et_far:
+    metrics: ['pesq', 'stoi', 'sdr']
+    sample_rate_src: 16000
+    sample_rate_in: 16000
+    clean_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_et/data/cln_test"
+    noisy_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_et/data/far_test"
+    noisy_suffix: "_ch1"
+    random_sample_idx: [10, 20, 30, 40, 50]
+
+REVERB_et_near:
+    metrics: ['pesq', 'stoi', 'sdr']
+    sample_rate_src: 16000
+    sample_rate_in: 16000
+    clean_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_et/data/cln_test"
+    noisy_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_et/data/near_test"
+    noisy_suffix: "_ch1"
+    random_sample_idx: [10, 20, 30, 40, 50]
+
+REVERB_et_far_hard:
+    metrics: ['utmos', 'dnsmos', 'nisqa', 'dnsmos_sig', 'dnsmos_bak']
+    sample_rate_src: 16000
+    sample_rate_in: 16000
+    clean_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_et/data/cln_test"
+    noisy_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_et/data/far_test_noisy_harder"
+    noisy_suffix: "_ch1"
+    random_sample_idx: [10, 20, 30, 40, 50]
+
+REVERB_et_near_hard:
+    metrics: ['pesq', 'stoi', 'sdr']
+    sample_rate_src: 16000
+    sample_rate_in: 16000
+    clean_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_et/data/cln_test"
+    noisy_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_et/data/near_test_noisy_harder"
+    noisy_suffix: "_ch1"
+    random_sample_idx: [10, 20, 30, 40, 50]
+
+REVERB_dt_far:
+    metrics: ['pesq', 'stoi', 'sdr']
+    sample_rate_src: 16000
+    sample_rate_in: 16000
+    clean_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_dt/data/cln_test"
+    noisy_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_dt/data/far_test"
+    noisy_suffix: "_ch1"
+    random_sample_idx: [10, 20, 30, 40, 50]
+
+REVERB_dt_near:
+    metrics: ['pesq', 'stoi', 'sdr']
+    sample_rate_src: 16000
+    sample_rate_in: 16000
+    clean_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_dt/data/cln_test"
+    noisy_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_dt/data/near_test"
+    noisy_suffix: "_ch1"
+    random_sample_idx: [10, 20, 30, 40, 50]
+
+REVERB_Real:
+    metrics: ['wvmos', 'utmos', 'dnsmos', 'nisqa', 'dnsmos_sig', 'dnsmos_bak']
+    sample_rate_src: 16000
+    sample_rate_in: 16000
+    clean_dir: null
+    noisy_dir: "/home/nas/DB/REVERB_challenge/MC_WSJ_AV_Eval"
+    random_sample_idx: [10, 20, 30, 40, 50]
+
+DNS_Real:
+    metrics: ['wvmos', 'utmos', 'dnsmos', 'nisqa', 'dnsmos_sig', 'dnsmos_bak']
+    sample_rate_src: 48000
+    sample_rate_in: 16000 # None means that the model can process various input sampling rates / # ! Must be none not None.
+    clean_dir: null
+    noisy_dir: "/home/Uihyeop/nas_Uihyeop/DB/DNS_Real_Recordings"
+    random_sample_idx: [10, 20, 30, 40, 50]

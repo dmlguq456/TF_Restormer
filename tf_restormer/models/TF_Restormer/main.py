@@ -5,7 +5,6 @@ from loguru import logger
 from .engine import Engine
 from .dataset import get_dataloaders
 from .model import Model
-from tf_restormer.utils import util_system
 from tf_restormer.utils.decorators import logger_wraps
 
 
@@ -16,9 +15,9 @@ logger.add(log_file_path, level="DEBUG", mode="w")
 @logger_wraps()
 def main(args):
     """Entry point for TF_Restormer training, evaluation, and inference."""
+    from tf_restormer._config import load_config
     config_name = getattr(args, 'config', 'baseline.yaml')
-    yaml_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs", config_name)
-    yaml_dict = util_system.parse_yaml(yaml_path)
+    yaml_dict = load_config("TF_Restormer", config_name)
     config = yaml_dict["config"]
 
     model_e = Model(**config["model"])
