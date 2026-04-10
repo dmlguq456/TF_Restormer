@@ -2,11 +2,7 @@ import os
 import logging
 import inspect
 import numpy as np
-from dotenv import load_dotenv
 from scipy.signal import find_peaks
-
-# Load environment variables
-load_dotenv()
 
 # Call logger for monitoring
 logger = logging.getLogger("sys_log")

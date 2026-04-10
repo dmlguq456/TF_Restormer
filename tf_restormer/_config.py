@@ -66,10 +66,8 @@ def resolve_testsets(variant: str) -> str:
 def expand_env_vars(value: str | None) -> str | None:
     """Expand ``${VAR}`` placeholders in *value* using environment variables.
 
-    Calls ``load_dotenv()`` lazily inside the function body so that .env files
-    are loaded on first use without requiring a module-level side effect.
-    Because ``python-dotenv`` defaults to ``override=False``, repeated calls
-    are safe and will not overwrite variables already set in the environment.
+    Expands ``${VAR}`` from environment variables (shell/export).
+    The ``.env`` file is no longer loaded automatically.
 
     Args:
         value: A string that may contain ``${VAR}`` patterns, or ``None``.
@@ -83,17 +81,14 @@ def expand_env_vars(value: str | None) -> str | None:
     if value is None:
         return None
 
-    from dotenv import load_dotenv  # lazy import — avoids module-level side effect
-
-    load_dotenv()
-
     def _replace(match: re.Match) -> str:
         var_name = match.group(1)
         result = os.getenv(var_name)
         if result is None:
             raise ValueError(
                 f"Environment variable '${{{var_name}}}' is not set. "
-                "Check your .env file or shell environment."
+                "Set it via `export VAR=...` in your shell, "
+                "or use direct paths (db_root / rir_dir) in your YAML config."
             )
         return result
 
