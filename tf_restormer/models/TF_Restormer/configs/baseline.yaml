@@ -11,8 +11,8 @@ config:
             max_len : 3 #! audio length (originally set to 4s, temporally reduced due to memory)
             sample_rate_src: 48000
             sample_rate_in: 16000
-            db_root: null        # Set to your dataset root, e.g. /home/DB/VCTK
-            rir_dir: null        # Set to your RIR dir, e.g. /home/DB/DNS_RIR_48k
+            db_root: "/home/DB/VCTK"
+            rir_dir: "/home/DB/DNS_RIR_48k"
             scp_dir: "data/scp/scp_VCTK"
             train:
                 spk: "tr_s.scp"
