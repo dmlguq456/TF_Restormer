@@ -38,42 +38,17 @@ config:
             level:
                 target_dB_FS : [-35, -15]
     dataset_test:
-        testset_key: "VCTK_SR" #! VCTK_DEMAND / UNIVERSE / VoxCeleb
-        tensorboard_logging: True
-        input_eval: True #! if False, only enhanced audio is evaluated
-        output_eval: True #! if False, only noisy audio is evaluated
-        VCTK_DEMAND: # simple denoising subtask
-            metrics: ['pesq', 'stoi', 'lsd', 'sdr', 'mcd', 
-                      'wvmos', 'utmos', 'dnsmos', 
-                      'bleu', 'bertscore', 'tokendist']
-            sample_rate_src: 16000
-            sample_rate_in: 16000
-            clean_dir: "${VCTK_DEMAND_DB_ROOT}/clean_testset_wav"
-            noisy_dir: "${VCTK_DEMAND_DB_ROOT}/noisy_testset_wav"
-            random_sample_idx: [10, 20, 30, 40, 50]
-        VCTK_SR: # simple super-resolution subtask
-            metrics: ['lsd', 'mcd', 'utmos']
-            sample_rate_src: 44100
-            sample_rate_in: 8000
+        testset_key: "VCTK_SR"
+        tensorboard_logging: true
+        input_eval: true
+        output_eval: true
+        # Partial overrides for streaming-specific settings
+        # (deep-merged with testsets.yaml: catalog defaults + these overrides)
+        VCTK_SR:
             clean_dir: "${VCTK_CORPUS_DB_ROOT}/wav48_silence_trimmed/test"
             noisy_dir: "${VCTK_CORPUS_DB_ROOT}/wav48_silence_trimmed/test"
-            random_sample_idx: [10, 20, 30, 40, 50]
-        UNIVERSE: # general speech restoration
-            metrics: ['pesq', 'stoi', 'lsd', 'sdr', 'mcd',
-                      'wvmos', 'utmos', 'dnsmos', 
-                      'bleu', 'bertscore', 'tokendist']
-            sample_rate_src: 16000
-            sample_rate_in: 16000
-            clean_dir: "${UNIVERSE_DB_ROOT}/target"
-            noisy_dir: "${UNIVERSE_DB_ROOT}/input"
-            random_sample_idx: [10, 20, 30, 40, 50]
-        VoxCeleb: # Real datatest
-            metrics: ['wvmos', 'utmos', 'dnsmos']
+        VoxCeleb:
             sample_rate_src: 48000
-            sample_rate_in: 16000 # None means that the model can process various input sampling rates / # ! Must be none not None. 
-            clean_dir: null
-            noisy_dir: "${VOXCELEB_SAMPLE_DB_ROOT}"
-            random_sample_idx: [10, 20, 30, 40, 50]
     # ------------------------------------------------------------ #
     dataloader:
         batch_size: 2

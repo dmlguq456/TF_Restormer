@@ -30,7 +30,7 @@ from torchaudio.functional import resample as torch_resample
 from .model import Model
 from .dataset import get_dataloaders
 from .engine_infer import EngineInfer
-from tf_restormer.utils import util_system, util_engine
+from tf_restormer.utils import util_engine
 from tf_restormer.utils.decorators import logger_wraps
 
 
@@ -300,12 +300,10 @@ def main_infer(args: argparse.Namespace) -> None:
 
     Config loading follows the same pattern as main.py.
     """
-    # ---- Config loading (mirrors main.py L22-29) ----
+    # ---- Config loading (mirrors main.py) ----
+    from tf_restormer._config import load_config
     config_name = getattr(args, "config", "baseline.yaml")
-    yaml_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "configs", config_name
-    )
-    yaml_dict = util_system.parse_yaml(yaml_path)
+    yaml_dict = load_config("TF_Restormer", config_name)
     logger.info(f"Using config file: {config_name}")
     config = yaml_dict["config"]
 

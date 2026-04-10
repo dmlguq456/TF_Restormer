@@ -298,29 +298,9 @@ class EvalDataset(Dataset):
     def __init__(self, dataset_config: dict) -> None:
         """File-based evaluation dataset that loads pre-recorded clean/noisy pairs."""
         # Resolve environment variables in paths
-        noisy_dir = dataset_config['noisy_dir']
-        clean_dir = dataset_config['clean_dir']
-        
-        # Replace environment variable placeholders with actual values
-        if noisy_dir and '${' in noisy_dir:
-            import re
-            env_vars = re.findall(r'\$\{([^}]+)\}', noisy_dir)
-            for var in env_vars:
-                env_value = os.getenv(var)
-                if env_value:
-                    noisy_dir = noisy_dir.replace(f'${{{var}}}', env_value)
-                else:
-                    raise ValueError(f"Environment variable {var} not found in .env file")
-        
-        if clean_dir and '${' in clean_dir:
-            import re
-            env_vars = re.findall(r'\$\{([^}]+)\}', clean_dir)
-            for var in env_vars:
-                env_value = os.getenv(var)
-                if env_value:
-                    clean_dir = clean_dir.replace(f'${{{var}}}', env_value)
-                else:
-                    raise ValueError(f"Environment variable {var} not found in .env file")
+        from tf_restormer._config import expand_env_vars
+        noisy_dir = expand_env_vars(dataset_config['noisy_dir'])
+        clean_dir = expand_env_vars(dataset_config['clean_dir'])
 
         # noisy_suffix: e.g. "_ch1" for REVERB challenge (filters noisy files by suffix)
         self.noisy_suffix = dataset_config.get('noisy_suffix', '')
