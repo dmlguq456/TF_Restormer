@@ -48,6 +48,7 @@ train = [
     "utmosv2",         # UTMOSv2 loss
     "tf-restormer[metrics-all]",
 ]
+hub = ["huggingface-hub"]
 dev = ["tf-restormer[train]", "pytest"]
 # IMPORTANT: Always combine with an accelerator extra.
 # Correct: uv sync --extra cu124 --extra mamba --extra train
@@ -58,6 +59,7 @@ full = ["tf-restormer[train,mamba,cu124]"]
 include = ["tf_restormer*"]
 
 [tool.setuptools.package-data]
+"tf_restormer" = ["checkpoints/**/*.pt", "checkpoints/**/*.yaml"]
 "tf_restormer.models.TF_Restormer" = ["configs/*.yaml"]
 "tf_restormer.utils" = ["NISQA_models/*.tar", "dnsmos_models/*.onnx", "km/*.bin"]
 

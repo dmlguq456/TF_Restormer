@@ -222,11 +222,13 @@ class EngineInfer:
             show_progress: Show tqdm progress bar.
 
         Returns:
-            Enhanced waveform tensor, shape ``(1, L)``, on ``self.device``.
+            Enhanced waveform tensor, shape ``(1, L_out)`` on ``self.device``,
+            where ``L_out`` is in **output sample rate (fs_out) space**.
+            When ``fs_out == fs_in``, ``L_out == L_in`` (no change).
         """
         _fs_out = fs_out if fs_out is not None else self.fs_src
 
-        # ---- resolve chunk / overlap lengths ----
+        # ---- resolve chunk / overlap lengths (input space, fs_in) ----
         _cfg = css_config or {}
         chunk_sec = _cfg.get("chunk_sec", self.chunk_sec)
         overlap_sec = _cfg.get("overlap_sec", self.overlap_sec)
@@ -240,16 +242,23 @@ class EngineInfer:
         if total_len <= chunk_len:
             return self.infer_chunk(
                 waveform.unsqueeze(0), fs_in=fs_in, fs_out=_fs_out
-            )["waveform"]  # (1, L)
+            )["waveform"]  # (1, L_out)
+
+        # ---- output-space sizing (handles fs_out != fs_in) ----
+        out_ratio = _fs_out / fs_in
+        out_chunk_len = int(chunk_sec * _fs_out)
+        out_overlap_len = int(overlap_sec * _fs_out)
+        out_total_len = int(total_len * out_ratio)
 
         # Accumulation buffers on CPU to avoid OOM for long recordings
-        out_wav = torch.zeros(total_len, dtype=torch.float32)
-        weight = torch.zeros(total_len, dtype=torch.float32)
+        out_wav = torch.zeros(out_total_len, dtype=torch.float32)
+        weight = torch.zeros(out_total_len, dtype=torch.float32)
 
-        # Hann-based linear fade window (same as EngineInferFolder L1118-1120)
-        fade = torch.ones(chunk_len, dtype=torch.float32)
-        fade[:overlap_len] = torch.linspace(0.0, 1.0, overlap_len)
-        fade[-overlap_len:] = torch.linspace(1.0, 0.0, overlap_len)
+        # Hann-based linear fade window — sized for OUTPUT chunk length
+        fade = torch.ones(out_chunk_len, dtype=torch.float32)
+        if out_overlap_len > 0:
+            fade[:out_overlap_len] = torch.linspace(0.0, 1.0, out_overlap_len)
+            fade[-out_overlap_len:] = torch.linspace(1.0, 0.0, out_overlap_len)
 
         # ---- optional progress bar ----
         positions = list(range(0, total_len, hop_len))
@@ -261,6 +270,7 @@ class EngineInfer:
                 logger.warning("tqdm not installed — show_progress ignored.")
 
         # ---- chunked processing loop (mirrors EngineInferFolder L1122-1146) ----
+        # Input chunking stays in fs_in space; output accumulation uses fs_out space.
         for start in positions:
             end = min(start + chunk_len, total_len)
             chunk = waveform[start:end]
@@ -271,19 +281,24 @@ class EngineInfer:
 
             enhanced_chunk = self.infer_chunk(
                 chunk.unsqueeze(0), fs_in=fs_in, fs_out=_fs_out
-            )["waveform"].squeeze(0).cpu()  # (chunk_len,)
+            )["waveform"].squeeze(0).cpu()  # (out_chunk_len,)
 
-            actual_len = end - start
-            w = fade[:actual_len] if pad_len > 0 else fade
+            # Map input position to output position via sample-rate ratio
+            out_start = int(start * out_ratio)
+            # Clamp to prevent overflow on the last (zero-padded) chunk
+            out_actual_len = min(enhanced_chunk.shape[0], out_total_len - out_start)
+            out_end = out_start + out_actual_len
 
-            out_wav[start:end] += enhanced_chunk[:actual_len] * w
-            weight[start:end] += w
+            w = fade[:out_actual_len]
+
+            out_wav[out_start:out_end] += enhanced_chunk[:out_actual_len] * w
+            weight[out_start:out_end] += w
 
         # Normalise by accumulated weight (avoid div-by-zero at edges)
         weight = weight.clamp(min=1e-8)
         out_wav = out_wav / weight
 
-        return out_wav.unsqueeze(0).to(self.device)  # (1, L)
+        return out_wav.unsqueeze(0).to(self.device)  # (1, L_out)
 
     def _single_pass_session(
         self,

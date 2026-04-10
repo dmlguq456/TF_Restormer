@@ -21,7 +21,64 @@ class WarmupConstantSchedule(torch.optim.lr_scheduler.LambdaLR):
 
 
 
-def load_last_checkpoint_n_get_epoch(checkpoint_dir: str, model: torch.nn.Module, optimizer: torch.optim.Optimizer | None = None, location: torch.device | str = 'cuda') -> int:
+def _fix_compiled_state_dict(state_dict: dict) -> dict:
+    """Strip ``_orig_mod.`` prefix from keys produced by ``torch.compile()``.
+
+    When a model is saved after wrapping with ``torch.compile()``, the state
+    dict keys carry an ``_orig_mod.`` prefix (e.g. ``_orig_mod.encoder.weight``).
+    This helper removes that prefix so the dict can be loaded into a plain
+    (non-compiled) model.
+
+    Args:
+        state_dict: Raw state dict loaded from a checkpoint.
+
+    Returns:
+        A new dict with the prefix stripped from every key that has it.
+        Keys without the prefix are kept unchanged.
+    """
+    return {
+        k.replace("_orig_mod.", "", 1) if k.startswith("_orig_mod.") else k: v
+        for k, v in state_dict.items()
+    }
+
+
+def _find_latest_checkpoint(checkpoint_dir: str | "Path") -> tuple[str, int] | None:
+    """Find the checkpoint file with the highest epoch number in *checkpoint_dir*.
+
+    Primary search: files matching the training-checkpoint naming convention
+    ``epoch.{NNNN}.pth`` (e.g. ``epoch.0016.pth``), ranked by epoch number.
+
+    Fallback: if no ``epoch.*.pth`` files are found, returns the most recently
+    modified ``.pt`` or ``.pth`` file in the directory (epoch reported as -1).
+
+    Args:
+        checkpoint_dir: Directory that may contain ``epoch.*.pth`` files.
+
+    Returns:
+        A ``(path, epoch)`` tuple for the best checkpoint found, or ``None``
+        if the directory contains no ``.pt`` / ``.pth`` files at all.
+    """
+    from pathlib import Path as _Path
+    directory = _Path(checkpoint_dir)
+    pth_files = [
+        f for f in os.listdir(directory)
+        if f.endswith(".pth") and f.startswith("epoch.")
+    ]
+    if pth_files:
+        epochs = [int(f.split('.')[1]) for f in pth_files]
+        best_idx = epochs.index(max(epochs))
+        path = str(directory / pth_files[best_idx])
+        return path, epochs[best_idx]
+
+    # Fallback: any .pt or .pth file, ranked by modification time
+    candidates = list(directory.glob("*.pt")) + list(directory.glob("*.pth"))
+    if candidates:
+        best = max(candidates, key=lambda p: p.stat().st_mtime)
+        return str(best), -1
+    return None
+
+
+def load_last_checkpoint_n_get_epoch(checkpoint_dir: str, model: torch.nn.Module, optimizer: torch.optim.Optimizer | None = None, location: torch.device | str = 'cuda', fix_compiled: bool = False) -> int:
     """
     Load the latest checkpoint (model state and optimizer state) from a given directory.
 
@@ -30,6 +87,9 @@ def load_last_checkpoint_n_get_epoch(checkpoint_dir: str, model: torch.nn.Module
         model (torch.nn.Module): The model into which the checkpoint's model state should be loaded.
         optimizer (torch.optim.Optimizer | None): The optimizer into which the checkpoint's optimizer state should be loaded. Defaults to None (skip optimizer loading).
         location (str | torch.device, optional): Device location for loading the checkpoint. Defaults to 'cuda'.
+        fix_compiled (bool): If True, strip ``_orig_mod.`` prefix from state dict
+            keys before loading (needed when a checkpoint was saved from a
+            ``torch.compile()``-wrapped model). Defaults to False.
 
     Returns:
         int: The epoch number associated with the loaded checkpoint.
@@ -39,25 +99,30 @@ def load_last_checkpoint_n_get_epoch(checkpoint_dir: str, model: torch.nn.Module
         - The checkpoint file is expected to have keys: 'model_state_dict', 'optimizer_state_dict', and 'epoch'.
         - If there are multiple checkpoint files in the directory, the one with the highest epoch number is loaded.
     """
-    # List all .pkl files in the directory
-    checkpoint_files = [f for f in os.listdir(checkpoint_dir)]
+    # List only epoch.*.pth files; avoids ValueError on unrelated files (e.g. .gitkeep)
+    checkpoint_files = [
+        f for f in os.listdir(checkpoint_dir)
+        if f.endswith(".pth") and f.startswith("epoch.")
+    ]
 
-    # If there are no checkpoint files, return 0 as the starting epoch
+    # If there are no checkpoint files, return 1 as the starting epoch
     if not checkpoint_files: return 1
     else:
         # Extract the epoch numbers from the file names and find the latest (max)
         epochs = [int(f.split('.')[1]) for f in checkpoint_files]
         latest_checkpoint_file = os.path.join(checkpoint_dir, checkpoint_files[epochs.index(max(epochs))])
 
-
         # Load the checkpoint into the model & optimizer
         logger.info(f"Loaded Pretrained model from {latest_checkpoint_file} .....")
         checkpoint_dict = torch.load(latest_checkpoint_file, map_location=location)
-        model.load_state_dict(checkpoint_dict['model_state_dict'], strict=False) # Depend on weight file's key!!
+        model_state = checkpoint_dict['model_state_dict']
+        if fix_compiled:
+            model_state = _fix_compiled_state_dict(model_state)
+        model.load_state_dict(model_state, strict=False) # Depend on weight file's key!!
         if optimizer is not None and 'optimizer_state_dict' in checkpoint_dict:
             optimizer.load_state_dict(checkpoint_dict['optimizer_state_dict'])
-        
-        # Retrun latent epoch
+
+        # Return latest epoch
         return checkpoint_dict['epoch'] + 1
     
 
