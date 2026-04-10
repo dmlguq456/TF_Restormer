@@ -35,13 +35,6 @@ from tf_restormer.utils.decorators import logger_wraps
 
 
 # ---------------------------------------------------------------------------
-# Module-level logger setup (identical pattern to main.py)
-# ---------------------------------------------------------------------------
-log_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log/system_log.log")
-logger.add(log_file_path, level="DEBUG", mode="w")
-
-
-# ---------------------------------------------------------------------------
 # Setup helpers
 # ---------------------------------------------------------------------------
 
@@ -71,7 +64,6 @@ def setup_inference(
     model = Model(**config["model"])
     model = model.to(device)
 
-    # Checkpoint path mirrors engine.py EngineInfer.__init__ (L974-982)
     train_phase = config["train_phase"] + "_" + config["dataset_phase"]
     log_base = f"log/log_{train_phase}_{config_name}"
     chkp_path = os.path.join(
@@ -137,7 +129,7 @@ def _infer_file(
 
 
 # ---------------------------------------------------------------------------
-# Directory (folder) inference — mirrors EngineInferFolder.run_infer_folder
+# Directory (folder) inference
 # ---------------------------------------------------------------------------
 
 def _infer_directory(
@@ -149,8 +141,7 @@ def _infer_directory(
 ) -> None:
     """Enhance all .wav/.flac files under input_dir and write to output_dir.
 
-    Sub-directory structure is preserved (same as EngineInferFolder,
-    engine.py L1178-1219).
+    Sub-directory structure is preserved.
 
     Args:
         engine:     Initialised EngineInfer.
@@ -177,7 +168,7 @@ def _infer_directory(
 
     with torch.inference_mode():
         for in_path in wav_files:
-            # Preserve relative directory structure (engine.py L1193-1195)
+            # Preserve relative directory structure
             rel_path = os.path.relpath(in_path, input_dir)
             out_path = os.path.join(output_dir, rel_path)
             # Force .wav extension regardless of original format
@@ -190,14 +181,14 @@ def _infer_directory(
                     wav_np = wav_np[:, 0]
                 wav = torch.from_numpy(wav_np)
 
-                # Resample to model input rate if needed (engine.py L1203)
+                # Resample to model input rate if needed
                 if orig_fs != fs_in:
                     wav = torch_resample(wav, orig_fs, fs_in)
 
                 result = engine.infer_session(wav, fs_in=fs_in, fs_out=fs_out)
                 enhanced = result["waveform"].squeeze(0).cpu()  # (L,)
 
-                # Normalise peak to avoid clipping (engine.py L1207-1209)
+                # Normalise peak to avoid clipping
                 peak = torch.max(torch.abs(enhanced))
                 if peak > 1e-8:
                     enhanced = enhanced / peak
@@ -215,7 +206,7 @@ def _infer_directory(
 
 
 # ---------------------------------------------------------------------------
-# DataLoader-based inference — migrated from EngineInfer._inference (L1005-1031)
+# DataLoader-based inference
 # ---------------------------------------------------------------------------
 
 def _infer_dataloader(
@@ -224,12 +215,9 @@ def _infer_dataloader(
     enhanced_dump_path: str,
     input_dump_path: str,
 ) -> None:
-    """Save enhanced and noisy-reference WAV files for every batch.
+    """Save enhanced and noisy-reference WAV files for every batch in a DataLoader.
 
-    Logic is an exact migration of ``engine.py EngineInfer._inference``
-    (L1005-1031).  File naming and path construction are preserved.
-
-    Per-batch fields used (same keys as original):
+    Per-batch fields used:
         * ``noisy_distort_input`` (float32) — fed to the model
         * ``noisy_distort``       (float32) — noisy reference saved as-is
         * ``file_name``           (list[str])
@@ -256,7 +244,6 @@ def _infer_dataloader(
 
     with torch.inference_mode():
         for batch in dataloader:
-            # Mirror engine.py L1011-1015 exactly
             noisy_orig = batch["noisy_distort_input"].type(torch.float32)  # (B, L)
             noisy = batch["noisy_distort"].type(torch.float32)              # (B, L)
             file_name = batch["file_name"]
@@ -268,7 +255,7 @@ def _infer_dataloader(
             result = engine.infer_chunk(noisy_orig, fs_in=fs_in, fs_out=fs_src)
             out_wav = result["waveform"]  # (1, L)
 
-            # Write enhanced and noisy reference WAV files (engine.py L1027-1028)
+            # Write enhanced and noisy reference WAV files
             sf.write(
                 os.path.join(enhanced_dump_path, f"{file_name[0]}.wav"),
                 out_wav[0].cpu().numpy(),
@@ -376,7 +363,7 @@ def main_infer(args: argparse.Namespace) -> None:
     if isinstance(testset_keys, str):
         testset_keys = [testset_keys]
 
-    # Build model once outside the loop (mirrors main.py L34)
+    # Build model once outside the loop
     model_e = Model(**config["model"])
 
     # Load checkpoint once — reuse the same model across testset_keys
@@ -414,7 +401,7 @@ def main_infer(args: argparse.Namespace) -> None:
             fs_in=fs_in,
         )
 
-        # Resolve dump paths (mirrors engine.py EngineInfer.__init__ L984-1000)
+        # Resolve dump paths
         if getattr(args, "dump_path", None) is not None:
             enhanced_dump_path = os.path.join(
                 args.dump_path,

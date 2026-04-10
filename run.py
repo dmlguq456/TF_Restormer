@@ -1,5 +1,6 @@
 import argparse
 import importlib
+import os
 from loguru import logger
 
 try:
@@ -49,12 +50,25 @@ if args.engine_mode == "infer_sample":
     import warnings
     warnings.warn(
         "Deprecated: --engine_mode infer_sample is replaced by --engine_mode infer --input <file>. "
-        "Will be removed in a future version.",
+        "Scheduled for removal in the next major release.",
         DeprecationWarning, stacklevel=2
     )
     args.engine_mode = "infer"
 
-# Call target model
+# Validate model name before any filesystem operations
+from tf_restormer._config import _VARIANT_MAP  # noqa: E402
+if args.model not in _VARIANT_MAP:
+    import sys
+    sys.exit(f"Unknown model: {args.model!r}. Choose from: {set(_VARIANT_MAP)}")
+
+# ---- Setup model-level file logger before dispatch ----
+_model_dir = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "tf_restormer", "models", args.model,
+)
+_log_file = os.path.join(_model_dir, "log", "system_log.log")
+os.makedirs(os.path.dirname(_log_file), exist_ok=True)
+logger.add(_log_file, level="DEBUG", mode="w")
 
 
 def resolve_module_path(model_name, module_name):

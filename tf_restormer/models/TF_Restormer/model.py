@@ -25,14 +25,15 @@ class Model(torch.nn.Module):
         super().__init__()
 
         class TF_stage(torch.nn.Module):
-            def __init__(self, block_type: str, RoPE: dict, TF_block_Stage: dict, num_repeat: int, Ekv):
+            def __init__(self, block_type: str, RoPE: dict, TF_block_Stage: dict, num_repeat: int, Ekv: torch.nn.Module) -> None:
                 super().__init__()
                 rope = RotaryEmbedding(RoPE['d_model'] // RoPE['n_head'], theta=RoPE['theta'])
                 self.tf_block = torch.nn.ModuleList(
                         [STAGE_BLOCK[block_type](**TF_block_Stage, Ekv=Ekv, rope=rope) for _ in range(num_repeat)])
                 self.layer_norm = nn.LayerNorm(RoPE["d_model"])
                     
-            def forward(self, x, kv=None, pad_len=None):
+            def forward(self, x: torch.Tensor, kv: torch.Tensor | None = None, pad_len: int | None = None) -> torch.Tensor:
+                # invariant: kv and pad_len are always passed together (decoder path only)
                 for block in self.tf_block:
                     x = block(x, kv, pad_len) if kv is not None else block(x)
                 x = self.layer_norm(x)

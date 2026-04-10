@@ -8,6 +8,12 @@ Note:
     If wheel support is needed in the future, callers should use
     ``importlib.resources.as_file()`` context manager around the full
     config-loading lifecycle instead.
+
+Design note:
+    This module is larger than SR_CorrNet's _config.py (which has only
+    resolve_config) because TF_Restormer uses a testset catalog pattern
+    (testsets.yaml) that requires load_testsets/load_config/expand_env_vars.
+    These functions are cohesive -- splitting is not warranted at this scale.
 """
 from __future__ import annotations
 
@@ -128,7 +134,7 @@ def load_config(variant: str, config_name: str) -> dict:
 
     Returns:
         The full parsed ``yaml_dict`` (includes top-level ``config`` key),
-        matching the return convention of the existing ``parse_yaml()`` helper.
+        matching the original YAML config loading convention.
 
     Note:
         ``${VAR}`` placeholders are NOT expanded here.  Expansion is deferred to
@@ -143,14 +149,9 @@ def load_config(variant: str, config_name: str) -> dict:
     else:
         yaml_path = resolve_config(variant, config_name)
 
-    # NOTE (security): yaml.full_load is used intentionally for backward
-    # compatibility with YAML anchor/alias syntax (&var / *var) present in
-    # existing config files.  yaml.safe_load also supports anchors/aliases
-    # (PyYAML 5.1+), but full_load is retained here to avoid any edge-case
-    # regressions until all configs are audited.  Do NOT load untrusted YAML
-    # files with this function; all configs are versioned in the repository.
+    # safe_load supports anchors/aliases (PyYAML 5.1+)
     with open(yaml_path, encoding="utf-8") as f:
-        yaml_dict = yaml.full_load(f)
+        yaml_dict = yaml.safe_load(f)
 
     if not isinstance(yaml_dict, dict) or "config" not in yaml_dict:
         raise ValueError(
