@@ -30,7 +30,6 @@ from torchaudio.functional import resample as torch_resample
 from .model import Model
 from .dataset import get_dataloaders
 from .engine_infer import EngineInfer
-from .engine_eval import EngineEval
 from tf_restormer.utils import util_system, util_engine
 from tf_restormer.utils.decorators import logger_wraps
 
@@ -318,6 +317,7 @@ def main_infer(args: argparse.Namespace) -> None:
     # Path 1 — evaluation mode (metrics + logging, no WAV dump required)
     # ==================================================================
     if args.engine_mode == "eval":
+        from .engine_eval import EngineEval  # lazy: only imported when eval is requested
         testset_keys = config["dataset_test"]["testset_key"]
         if isinstance(testset_keys, str):
             testset_keys = [testset_keys]
@@ -335,6 +335,10 @@ def main_infer(args: argparse.Namespace) -> None:
             )
             engine = EngineEval(args, config, model_e, dataloaders, gpuid, device)
             engine.run_eval()
+        # Clear metric model cache after ALL testsets complete — NOT inside run_eval()
+        # to avoid reloading GPU models (WVMOS, UTMOS, etc.) between testsets.
+        from tf_restormer.utils.metrics import _model_cache
+        _model_cache.clear()
         return
 
     # ==================================================================
