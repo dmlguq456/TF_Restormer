@@ -1,5 +1,4 @@
 import argparse
-import os
 import torch
 from loguru import logger
 from .engine import Engine
@@ -7,10 +6,6 @@ from .dataset import get_dataloaders
 from .model import Model
 from tf_restormer.utils.decorators import logger_wraps
 
-
-# Setup logger
-log_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log/system_log.log")
-logger.add(log_file_path, level="DEBUG", mode="w")
 
 @logger_wraps()
 def main(args):

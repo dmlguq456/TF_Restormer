@@ -51,8 +51,7 @@ class EngineInfer:
         self.model.eval()
 
         # ------------------------------------------------------------------
-        # STFT / iSTFT setup (identical pattern to engine.py EngineInfer
-        # __init__, lines 969-975)
+        # STFT / iSTFT setup
         # ------------------------------------------------------------------
         self.stft: dict = {}
         self.istft: dict = {}
@@ -120,7 +119,7 @@ class EngineInfer:
         else:
             out_F = int(self.frame_length * int(_fs_out) / 1000) // 2 + 1
 
-        # ---- nearest STFT key fallback (same logic as EngineInferFolder._process_chunk L1156-1158) ----
+        # ---- nearest STFT key fallback for non-standard sample rates ----
         stft_key = str(_fs_in)
         if stft_key not in self.stft:
             stft_key = min(self.fs_list, key=lambda k: abs(int(k) - _fs_in))
@@ -130,7 +129,7 @@ class EngineInfer:
         if istft_key not in self.istft:
             istft_key = min(self.fs_list, key=lambda k: abs(int(k) - _fs_out))
 
-        # ---- STFT → model → iSTFT (mirrors engine.py L1018-1024 and L1160-1164) ----
+        # ---- STFT -> model -> iSTFT pipeline ----
         X = self.stft[stft_key](x, cplx=True)                         # (1, F, T)
         model_input = torch.stack([torch.real(X), torch.imag(X)], dim=-1)  # (1, F, T, 2)
         comp = self.model(model_input, out_F=out_F)                    # (1, F, T, 2)
@@ -211,8 +210,6 @@ class EngineInfer:
     ) -> torch.Tensor:
         """Chunked-streaming synthesis (CSS) with Hann-fade overlap-add.
 
-        Mirrors ``EngineInferFolder._enhance_wav`` (engine.py L1099-1147).
-
         Args:
             waveform:   1-D tensor ``(L,)`` on any device / dtype.
             fs_in:      Input sample rate (Hz).
@@ -238,7 +235,7 @@ class EngineInfer:
         hop_len = chunk_len - overlap_len
         total_len = waveform.shape[0]
 
-        # Short clip: fall back to single-pass (same as EngineInferFolder L1110-1112)
+        # Short clip: fall back to single-pass
         if total_len <= chunk_len:
             return self.infer_chunk(
                 waveform.unsqueeze(0), fs_in=fs_in, fs_out=_fs_out
@@ -269,7 +266,7 @@ class EngineInfer:
             except ImportError:
                 logger.warning("tqdm not installed — show_progress ignored.")
 
-        # ---- chunked processing loop (mirrors EngineInferFolder L1122-1146) ----
+        # ---- chunked processing loop ----
         # Input chunking stays in fs_in space; output accumulation uses fs_out space.
         for start in positions:
             end = min(start + chunk_len, total_len)

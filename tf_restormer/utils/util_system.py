@@ -24,7 +24,7 @@ def parse_yaml(path):
     """
     try:
         with open(path, 'r') as yaml_file:
-            config_dict = yaml.full_load(yaml_file)
+            config_dict = yaml.safe_load(yaml_file)
         return config_dict
     except FileNotFoundError:
         raise
