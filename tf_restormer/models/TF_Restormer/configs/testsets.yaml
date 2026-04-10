@@ -7,16 +7,16 @@ VCTK_DEMAND: # simple denoising subtask
               'bleu', 'bertscore', 'tokendist']
     sample_rate_src: 16000
     sample_rate_in: 16000
-    clean_dir: "/path/to/VCTK_DEMAND/clean_testset_wav"  # update to your path
-    noisy_dir: "/path/to/VCTK_DEMAND/noisy_testset_wav"  # update to your path
+    clean_dir: "/home/DB/VCTK_DEMAND/clean_testset_wav"
+    noisy_dir: "/home/DB/VCTK_DEMAND/noisy_testset_wav"
     random_sample_idx: [10, 20, 30, 40, 50]
 
 VCTK_SR: # simple super-resolution subtask
     metrics: ['lsd', 'mcd', 'utmos']
     sample_rate_src: 44100
     sample_rate_in: 8000
-    clean_dir: "/path/to/VCTK_CORPUS/test"  # update to your path
-    noisy_dir: "/path/to/VCTK_CORPUS/test"  # update to your path
+    clean_dir: "/home/DB/VCTK-Corpus-0.92/test"
+    noisy_dir: "/home/DB/VCTK-Corpus-0.92/test"
     random_sample_idx: [10, 20, 30, 40, 50]
 
 UNIVERSE: # general speech restoration
@@ -25,8 +25,8 @@ UNIVERSE: # general speech restoration
               'bleu', 'bertscore', 'tokendist']
     sample_rate_src: 16000
     sample_rate_in: 16000
-    clean_dir: "/path/to/UNIVERSE/target"  # update to your path
-    noisy_dir: "/path/to/UNIVERSE/input"  # update to your path
+    clean_dir: "/home/DB/UNIVERSE/target"
+    noisy_dir: "/home/DB/UNIVERSE/input"
     random_sample_idx: [10, 20, 30, 40, 50]
 
 VoxCeleb: # Real datatest
@@ -34,7 +34,7 @@ VoxCeleb: # Real datatest
     sample_rate_src: 16000
     sample_rate_in: 16000 # None means that the model can process various input sampling rates / # ! Must be none not None.
     clean_dir: null
-    noisy_dir: "/path/to/VoxCeleb_sample"  # update to your path
+    noisy_dir: "/home/DB/VoxCeleb_sample_50_SE"
     random_sample_idx: [10, 20, 30, 40, 50]
 
 URGENT2025:
