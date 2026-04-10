@@ -35,29 +35,9 @@ def get_dataloaders(args: argparse.Namespace, phase: str, dataset_config: dict, 
     partitions = ["train", "valid"] if args.engine_mode == "train"  else ["test"]
     dataloaders = {}
     
-    # Determine DB_ROOT: config-first, then env-var fallback
+    # DB_ROOT from YAML config (required for train/valid)
     if phase in dataset_config:
-        # Config-first: db_root comes from YAML (Step 1.1 adds this field)
         db_root = dataset_config[phase].get('db_root', None)
-        # Backward compat fallback: if db_root not in YAML, try SCP-name heuristic with os.environ
-        if db_root is None:
-            scp_dir = dataset_config[phase].get('scp_dir', '')
-            if 'LibriTTS_R' in scp_dir:
-                db_root = os.environ.get('LIBRI_TTS_R_DB_ROOT')
-            elif 'DAPS' in scp_dir:
-                db_root = os.environ.get('DAPS_DB_ROOT')
-            elif 'DNS' in scp_dir:
-                db_root = os.environ.get('DNS_DB_ROOT')
-        if db_root is None:
-            import warnings
-            warnings.warn(
-                f"db_root not set for dataset phase '{phase}'. "
-                "Set 'db_root' in your YAML config or export the appropriate "
-                "environment variable (e.g. LIBRI_TTS_R_DB_ROOT).",
-                stacklevel=2,
-            )
-        if db_root:
-            dataset_config[phase]['db_root'] = db_root
 
     for partition in partitions:
         if partition in ["train", "valid"]:
@@ -94,17 +74,10 @@ class SynthesisDataset(Dataset):
         self.wave_dict_noise = util_dataset.parse_scps(wave_scp_noise, db_root)
         self.wave_noise_keys = list(self.wave_dict_noise.keys())
 
-        # load RIR list: config-first, then env-var fallback
-        rir_dir = dataset_config.get('rir_dir', None)
-        if rir_dir is None:
-            # Backward compat fallback: resolve alias via os.environ
-            rir_alias = dataset_config.get('rir', 'DNS_16K')
-            rir_dir = os.environ.get(f"RIR_{rir_alias}")
+        # RIR directory from YAML config (required)
+        rir_dir = dataset_config.get('rir_dir')
         if not rir_dir:
-            raise ValueError(
-                f"RIR path not found. Set 'rir_dir' in your YAML config, "
-                f"or export RIR_{dataset_config.get('rir', 'DNS_16K')} in your shell."
-            )
+            raise ValueError("'rir_dir' not set in YAML config. Set it to your RIR directory path.")
         
         if not os.path.exists(rir_dir):
             raise ValueError(f"RIR directory does not exist: {rir_dir}")
