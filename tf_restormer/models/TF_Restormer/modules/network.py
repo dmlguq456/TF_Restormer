@@ -6,7 +6,10 @@ import math
 import numpy
 from tf_restormer.utils.decorators import logger_wraps
 from rotary_embedding_torch import RotaryEmbedding
-from mamba_ssm import Mamba
+try:
+    from mamba_ssm import Mamba
+except ImportError:
+    Mamba = None
 
 
     
@@ -308,6 +311,11 @@ class LinTransDecoder(nn.Module):
 class MambaV1Block(nn.Module):
     def __init__(self, d_model: int, d_state: int, d_conv: int, expand: int, dropout_rate: float):
         super().__init__()
+        if Mamba is None:
+            raise ImportError(
+                "mamba-ssm is required for MambaV1Block. "
+                "Install with: uv sync --extra mamba  (or: pip install causal-conv1d mamba-ssm)"
+            )
         self.layernorm = nn.LayerNorm(d_model)
         self.mamba_fw = Mamba(d_model=d_model, d_state=d_state, d_conv=d_conv, expand=expand)
         self.dropout = nn.Dropout(dropout_rate)
