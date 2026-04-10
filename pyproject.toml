@@ -19,7 +19,6 @@ dependencies = [
     "tqdm",
     "scipy",
     "einops",
-    "python-dotenv",
     "pip",
 ]
 

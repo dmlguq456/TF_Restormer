@@ -1,242 +1,182 @@
-# TF-Restormer for Speech Restoration
+# TF-Restormer for Speech Enhancement
 
-Time-Frequency domain Restormer for speech restoration. [Paper Link(Arxiv)](https://arxiv.org/pdf/2509.21003) [Demo Link](https://tf-restormer.github.io/demo/)
+Time-Frequency domain Restormer for speech enhancement.
+[[Paper (arXiv)]](https://arxiv.org/pdf/2509.21003) [[Demo]](https://tf-restormer.github.io/demo/)
+
+---
 
 ## Installation
 
-### Prerequisites
-- Python 3.12 (required)
-- CUDA 12.4 or compatible version
-- [uv](https://docs.astral.sh/uv/) package manager (recommended) or pip
-- GCC/G++ compiler for building native extensions
+**Requirements**: Python 3.12, [uv](https://docs.astral.sh/uv/)
 
-### Environment Setup
-
-1. Clone the repository:
 ```bash
 git clone <repository-url>
-cd TF_Restormer
+cd TF_Restormer_release
+
+# CUDA 12.4 — inference only
+uv sync --extra cu124
+
+# CUDA 12.4 — full training + offline model
+uv sync --extra cu124 --extra train
+
+# CUDA 12.4 — full training + offline + streaming (Mamba) model
+uv sync --extra cu124 --extra train --extra mamba
+
+# CUDA 12.6 variants
+uv sync --extra cu126
+uv sync --extra cu126 --extra train --extra mamba
+
+# CPU-only
+uv sync --extra cpu
 ```
 
-2. Configure environment variables:
-```bash
-# Copy the example environment file
-cp .env.example .env
+> The `--extra mamba` flag installs `mamba-ssm` and `causal-conv1d`, required only for the streaming (online) model. Build requires GCC/G++.
 
-# Edit .env to set your CUDA path and dataset paths
-# Example CUDA configuration:
-# CUDA_HOME=/path/to/cuda-12.4
+---
+
+## Quick Start — Library API
+
+```python
+from tf_restormer import SEInference
+
+# Load a pretrained model
+model = SEInference.from_pretrained(
+    config="baseline.yaml",
+    checkpoint_path="path/to/checkpoints/baseline/",
+    device="cuda",
+)
+
+# Enhance a file
+result = model.process_file("noisy.wav", output_path="enhanced.wav")
+# result["waveform"]    -> (1, L_out) tensor at 48 kHz
+# result["sample_rate"] -> 48000
+
+# Enhance a waveform tensor directly
+import torch
+waveform = torch.randn(1, 16000)     # (1, L) at 16 kHz input
+result = model.process_waveform(waveform)
 ```
 
-3. Create virtual environment and install dependencies:
-```bash
-# Using uv (recommended)
-uv sync
+See `library_examples/` for complete runnable scripts.
 
-# If some packages fail to build, install with proper compiler flags:
-source .env
-export CFLAGS="-O3" CXXFLAGS="-O3"
-uv add --no-build-isolation-package <package-name> <package-name>
+---
+
+## CLI Usage
+
+### Prerequisites
+
+Before training, set `db_root` and `rir_dir` in
+`tf_restormer/models/TF_Restormer/configs/baseline.yaml` under the `to48k:` section:
+
+```yaml
+dataset:
+    to48k:
+        db_root: /path/to/your/dataset   # e.g. /home/DB/VCTK
+        rir_dir: /path/to/DNS_RIR_48k    # e.g. /home/DB/DNS_RIR_48k
 ```
 
-### Troubleshooting Installation
-
-If you encounter build errors with C/C++ extensions (pysptk, pyworld, causal-conv1d, mamba-ssm):
-
-```bash
-# Load environment variables
-source .env
-
-# Set compiler flags to avoid debug flags issue
-export CC=gcc
-export CXX=g++
-export CFLAGS="-O3"
-export CXXFLAGS="-O3"
-
-# Install packages one by one if needed
-uv add pysptk --no-build-isolation-package pysptk
-uv add pyworld --no-build-isolation-package pyworld
-uv add causal-conv1d --no-build-isolation-package causal-conv1d
-uv add mamba-ssm --no-build-isolation-package mamba-ssm
-```
-
-### Verify Installation
-
-```bash
-# Check if all packages are installed
-uv pip list | grep -E "torch|pysptk|pyworld|causal-conv1d|mamba-ssm"
-
-# Test PyTorch CUDA availability
-uv run python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}')"
-```
-
-## Training Guide
-
-### Prerequisites for Training
-
-1. **Dataset Preparation**
-   - Download required datasets (LibriTTS-R, DNS-Challenge, etc.)
-   - Update dataset paths in `.env` file
-
-2. **Environment Configuration**
-   ```bash
-   # Copy and configure environment file
-   cp .env.example .env
-   
-   # Edit .env to set your dataset paths:
-   # DNS_DB_ROOT=/path/to/DNS-Challenge-16kHz
-   # DNS_RIR_PATH=datasets_fullband/impulse_responses
-   # LIBRI_TTS_R_DB_ROOT=/path/to/LibriTTS_R
-   # ... (other dataset paths)
-   ```
-
-### Data Preparation
-
-1. **Create SCP Files**
-   
-   SCP (Script) files are text files that map audio file identifiers to their full paths. They are required for the dataloader to find the audio files.
-
-   ```bash
-   # Create all necessary SCP files for LibriTTS-R dataset
-   uv run data/create_scp/create_scp_all_libriTTS_R.py
-   
-   # This will create:
-   # - data/scp/scp_LibriTTS_R/tr_s.scp (training speaker files)
-   # - data/scp/scp_LibriTTS_R/cv_s.scp (validation speaker files)  
-   # - data/scp/scp_LibriTTS_R/tr_n.scp (noise files)
-   ```
-
-2. **Verify SCP Files**
-   ```bash
-   # Check if SCP files are created properly
-   wc -l data/scp/scp_LibriTTS_R/*.scp
-   
-   # Expected output (example):
-   # 354729 data/scp/scp_LibriTTS_R/tr_s.scp
-   # 10349 data/scp/scp_LibriTTS_R/cv_s.scp
-   # 58454 data/scp/scp_LibriTTS_R/tr_n.scp
-   ```
-
-### Model Training
-
-1. **Configuration**
-   
-   Each model version has its own configuration file:
-   - `models/TF_Restormer/configs.yaml`
-   
-   Key configuration parameters:
-   - `train_phase`: Training phase (`pretrain`, `adversarial`)
-   - `dataset_phase`: Dataset configuration (`to48k`)
-   - `batch_size`: Batch size for training
-   - `max_epoch`: Maximum epochs for each phase
-
-2. **Start Training**
-   ```bash
-   # Train TF_Restormer baseline(offline) model
-   uv run run.py --model TF_Restormer --engine_mode train --config baseline.yaml
-
-   # Train TF_Restormer streaming(online) model
-   uv run run.py --model TF_Restormer --engine_mode train --config streaming.yaml
-   ```
-
-3. **Training Phases**
-   
-   The training consists of three phases:
-   - **Pretrain Phase**: Basic model training with enhancement losses
-   - **Adversarial Phase**: GAN training with discriminator
-
-4. **Monitor Training**
-   ```bash
-   # Check training logs
-   tail -f models/TF_Restormer_v3/log/system_log.log
-   
-   # Monitor GPU usage
-   watch -n 1 nvidia-smi
-   ```
-
-### Common Issues and Solutions
-
-1. **Missing Dependencies**
-   ```bash
-   # If pesq module is missing
-   uv add pesq
-   
-   # If discrete-speech-metrics fails to install
-   # The training will continue with a warning, but some metrics will be disabled
-   ```
-
-2. **Missing SCP Files**
-   ```bash
-   # Error: FileNotFoundError: File not found: data/scp/scp_LibriTTS_R/tr_n.scp
-   # Solution: Run the SCP creation script
-   uv run data/create_scp/create_scp_all_libriTTS_R.py
-   ```
-
-3. **Dataset Path Issues**
-   ```bash
-   # Error: DNS noise path does not exist
-   # Solution: Update paths in .env file to match your system
-   # Then regenerate SCP files
-   ```
-
-4. **RIR (Room Impulse Response) Path Issues**
-   ```bash
-   # RIR paths are managed via aliases in configs.yaml and actual paths in .env:
-   # In configs.yaml: rir: "DNS_16K" or rir: "DNS_48K"
-   # In .env file: 
-   # RIR_DNS_16K=/path/to/16khz/impulse_responses
-   # RIR_DNS_48K=/path/to/48khz/impulse_responses
-   ```
-
-### Monitoring Training with TensorBoard
+### Commands
 
 ```bash
-# Run TensorBoard to monitor training progress
-# Note: Due to NumPy version compatibility issues, use the following command:
-uv run python -m tensorboard.main --logdir=models/model_name/log
+# Train
+uv run python run.py --model TF_Restormer --engine_mode train --config baseline.yaml
 
-# TensorBoard will be available at http://localhost:6006/
-# You may see a warning about TensorFlow not being found, but TensorBoard will still work
+# Inference — single file
+uv run python run.py --model TF_Restormer --engine_mode infer --config baseline.yaml \
+    --input noisy.wav --output enhanced/
+
+# Inference — full test set (paths from config)
+uv run python run.py --model TF_Restormer --engine_mode infer --config baseline.yaml
+
+# Evaluation — compute metrics on test set
+uv run python run.py --model TF_Restormer --engine_mode eval --config baseline.yaml
 ```
 
-### Inference (e.g. baseline.yaml)
+Available configs: `baseline.yaml` (offline), `streaming.yaml` (online/Mamba).
+
+---
+
+## Checkpoint Management
 
 ```bash
-# Run inference on a test set and save on default dir
-uv run run.py --model TF_Restormer --engine_mode infer --config baseline.yaml
+# Export the latest checkpoint to tf_restormer/checkpoints/baseline/
+python tf_restormer/export.py --config baseline.yaml
 
+# Export and upload to Hugging Face Hub
+python tf_restormer/export.py --config baseline.yaml --upload --repo-id shinuh/tf-restormer-baseline
 
-# if specfiying dump dir
-uv run run.py --model TF_Restormer --engine_mode infer --config baseline.yaml --dump_path /path/to/dump
+# Upload all locally exported checkpoints
+python tf_restormer/export.py --upload-all
 
+# Download a checkpoint from Hugging Face Hub
+python tf_restormer/export.py --download --config baseline.yaml --repo-id shinuh/tf-restormer-baseline
 ```
 
-### Testing
+Requires `uv sync --extra hub` for Hugging Face upload/download.
 
-```bash
-# Run evaluation on test dataset
-uv run run.py --model TF_Restormer --engine_mode test
+---
+
+## Examples
+
+| File | Description |
+|------|-------------|
+| `library_examples/basic_inference.py` | Load a model and enhance a single file |
+| `library_examples/batch_inference.py` | Enhance all `.wav` files in a directory |
+| `library_examples/streaming_inference.py` | Chunk-by-chunk streaming (requires `--extra mamba`) |
+| `library_examples/config_override.py` | Override config values at load time; HF Hub loading |
+| `library_examples/eval_metrics.py` | Compute PESQ/STOI/DNSMOS/NISQA independently |
+
+---
+
+## Project Structure
+
 ```
-
-## Development
-
-### Project Structure
+TF_Restormer_release/
+├── run.py                          # CLI entry point (train / infer / eval)
+├── pyproject.toml                  # Package metadata and dependencies
+│
+├── tf_restormer/                   # Installable Python package
+│   ├── __init__.py                 # Public API: SEInference, InferenceSession
+│   ├── inference.py                # SEInference and InferenceSession classes
+│   ├── export.py                   # Checkpoint export / HF Hub upload-download
+│   ├── _config.py                  # Config loading helpers
+│   │
+│   ├── models/
+│   │   └── TF_Restormer/
+│   │       ├── model.py            # Model architecture entry point
+│   │       ├── engine.py           # Training engine
+│   │       ├── engine_infer.py     # Inference engine
+│   │       ├── engine_eval.py      # Evaluation engine
+│   │       ├── dataset.py          # Dataset and dataloader
+│   │       ├── loss.py             # Loss functions
+│   │       ├── main.py             # Train/eval orchestrator
+│   │       ├── main_infer.py       # Inference orchestrator
+│   │       ├── configs/
+│   │       │   ├── baseline.yaml   # Offline model config
+│   │       │   ├── streaming.yaml  # Online (Mamba) model config
+│   │       │   └── testsets.yaml   # Test set definitions
+│   │       └── modules/
+│   │           ├── network.py      # Restormer network blocks
+│   │           ├── module.py       # Sub-modules (attention, FFN, etc.)
+│   │           └── msstftd.py      # Multi-scale STFT discriminator
+│   │
+│   └── utils/
+│       ├── util_engine.py          # Checkpoint load/save helpers
+│       ├── util_dataset.py         # Dataset utilities
+│       ├── util_stft.py            # STFT helpers
+│       ├── util_system.py          # System/logging utilities
+│       ├── util_writer.py          # TensorBoard writer
+│       ├── metrics/                # PESQ, STOI, DNSMOS, NISQA, ASR-WER
+│       └── pos_embed.py            # Positional embedding utilities
+│
+├── library_examples/               # Runnable API usage examples
+│   ├── basic_inference.py
+│   ├── batch_inference.py
+│   ├── streaming_inference.py
+│   ├── config_override.py
+│   └── eval_metrics.py
+│
+└── data/
+    ├── create_scp/                 # Scripts to generate SCP file lists
+    └── scp/                        # Generated SCP files (gitignored)
 ```
-TF_Restormer/
-├── data/
-│   ├── create_scp/     # Scripts to create SCP files
-│   └── scp/             # Generated SCP files
-├── models/
-│   └── TF_Restormer/ # baseline model
-├── utils/               # Utility functions
-├── .env                 # Environment configuration (create from .env.example)
-├── pyproject.toml       # Project dependencies
-└── run.py              # Main entry point
-```
-
-### Adding New Datasets
-
-1. Add dataset paths to `.env`
-2. Create SCP generation script in `data/create_scp/`
-3. Update model configuration in `configs.yaml`
-4. Run SCP generation script before training

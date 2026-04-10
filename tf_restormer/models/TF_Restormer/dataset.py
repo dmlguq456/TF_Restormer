@@ -15,11 +15,7 @@ from torch.utils.data import Dataset, DataLoader
 from pedalboard import LowpassFilter, HighpassFilter, Distortion , Clipping, MP3Compressor
 from scipy.signal import filtfilt, firwin2
 import colorednoise
-from dotenv import load_dotenv
 from torchaudio.functional import resample as torch_resample
-
-# Load environment variables
-load_dotenv()
 
 
 @logger_wraps()
@@ -39,20 +35,27 @@ def get_dataloaders(args: argparse.Namespace, phase: str, dataset_config: dict, 
     partitions = ["train", "valid"] if args.engine_mode == "train"  else ["test"]
     dataloaders = {}
     
-    # Determine DB_ROOT based on SCP directory
+    # Determine DB_ROOT: config-first, then env-var fallback
     if phase in dataset_config:
-        scp_dir = dataset_config[phase].get('scp_dir', '')
-        # Extract dataset type from scp_dir to determine which DB_ROOT to use
-        if 'LibriTTS_R' in scp_dir:
-            db_root = os.getenv('LIBRI_TTS_R_DB_ROOT')
-        elif 'DAPS' in scp_dir:
-            db_root = os.getenv('DAPS_DB_ROOT')
-        elif 'DNS' in scp_dir:
-            db_root = os.getenv('DNS_DB_ROOT')
-        else:
-            db_root = None
-        
-        # Add db_root to dataset config
+        # Config-first: db_root comes from YAML (Step 1.1 adds this field)
+        db_root = dataset_config[phase].get('db_root', None)
+        # Backward compat fallback: if db_root not in YAML, try SCP-name heuristic with os.environ
+        if db_root is None:
+            scp_dir = dataset_config[phase].get('scp_dir', '')
+            if 'LibriTTS_R' in scp_dir:
+                db_root = os.environ.get('LIBRI_TTS_R_DB_ROOT')
+            elif 'DAPS' in scp_dir:
+                db_root = os.environ.get('DAPS_DB_ROOT')
+            elif 'DNS' in scp_dir:
+                db_root = os.environ.get('DNS_DB_ROOT')
+        if db_root is None:
+            import warnings
+            warnings.warn(
+                f"db_root not set for dataset phase '{phase}'. "
+                "Set 'db_root' in your YAML config or export the appropriate "
+                "environment variable (e.g. LIBRI_TTS_R_DB_ROOT).",
+                stacklevel=2,
+            )
         if db_root:
             dataset_config[phase]['db_root'] = db_root
 
@@ -91,13 +94,17 @@ class SynthesisDataset(Dataset):
         self.wave_dict_noise = util_dataset.parse_scps(wave_scp_noise, db_root)
         self.wave_noise_keys = list(self.wave_dict_noise.keys())
 
-        # load RIR list using alias from config
-        rir_alias = dataset_config.get('rir', 'DNS_16K')  # Default to DNS_16K if not specified
-        rir_env_key = f"RIR_{rir_alias}"
-        rir_dir = os.getenv(rir_env_key)
-        
+        # load RIR list: config-first, then env-var fallback
+        rir_dir = dataset_config.get('rir_dir', None)
+        if rir_dir is None:
+            # Backward compat fallback: resolve alias via os.environ
+            rir_alias = dataset_config.get('rir', 'DNS_16K')
+            rir_dir = os.environ.get(f"RIR_{rir_alias}")
         if not rir_dir:
-            raise ValueError(f"RIR path for alias '{rir_alias}' not found. Please set {rir_env_key} in .env file")
+            raise ValueError(
+                f"RIR path not found. Set 'rir_dir' in your YAML config, "
+                f"or export RIR_{dataset_config.get('rir', 'DNS_16K')} in your shell."
+            )
         
         if not os.path.exists(rir_dir):
             raise ValueError(f"RIR directory does not exist: {rir_dir}")
