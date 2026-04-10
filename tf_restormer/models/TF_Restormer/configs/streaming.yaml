@@ -20,7 +20,6 @@ config:
             valid:
                 spk: "cv_s.scp"
                 noise: "tr_n.scp"  ## noise list does not matches to spks
-            rir: "DNS_48K"  # RIR type identifier (used for synthesis config, not path resolution)
         sythesis_config:
             multi_spk_prob: 0.2
             rir:
