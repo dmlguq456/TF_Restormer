@@ -12,7 +12,7 @@ import torchaudio.transforms as T
 from torchaudio.functional import resample as torch_resample
 from torchaudio.io import AudioEffector, CodecConfig
 from torch.utils.data import DataLoader
-from tf_restormer.utils import util_engine, util_stft, util_writer
+from tf_restormer.utils import util_engine, util_stft
 from tf_restormer.utils.decorators import logger_wraps
 from .loss import SSL_FM_Loss, MS_STFT_Gen_SC_Loss, Time_Domain_L1, HF_Loss
 from .modules.msstftd import SFIMultiScaleSTFTDiscriminator
@@ -65,23 +65,19 @@ class Engine(object):
         self.prob = config["engine"]["prob_effect"]
 
         # optim, scheduler, STFT configuration
-        optim_cls = getattr(torch.optim, self.config["engine"]["optimizer"]["name"])
-        sched_cls = getattr(torch.optim.lr_scheduler, self.config["engine"]["scheduler"]["name"])
-
+        self.main_optimizer, self.warmup_scheduler, self.main_scheduler, optim_cls, sched_cls = \
+            util_engine.setup_optimizer_and_scheduler(self.model, config)
 
         # load enhance model
         config_name = self.args.config if hasattr(self.args, 'config') else 'default'
-        log_base = f"log/log_{self.train_phase}_{config_name}"
-        self.main_optimizer = optim_cls(self.model.parameters(),
-                                        **self.config["engine"]["optimizer"].get(self.config["engine"]["optimizer"]["name"], {}))
-        self.warmup_scheduler = util_engine.WarmupConstantSchedule(self.main_optimizer,
-                                                                **self.config["engine"]["scheduler"]["WarmupConstantSchedule"])
-        self.main_scheduler = sched_cls(self.main_optimizer,
-                                        **self.config["engine"]["scheduler"].get(self.config["engine"]["scheduler"]["name"], {}))
+        self.config_name = config_name  # store for format_epoch_log
 
-        self.chkp_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), log_base, "weights")
-        os.makedirs(self.chkp_path, exist_ok=True)
-        self.start_epoch = util_engine.load_last_checkpoint_n_get_epoch(self.chkp_path, self.model, self.main_optimizer, location=self.device)
+        self.chkp_path, self.writer_src, self.start_epoch = util_engine.setup_logging(
+            config_name, self.train_phase,
+            os.path.dirname(os.path.abspath(__file__)),
+            self.model, self.main_optimizer, self.device,
+            config=config, fs_src=self.fs_src)
+
         train_phase_list = config['train_phase_list']
         if 'adversarial' in self.train_phase:
             # Fallback from pretrain if no fine-tune checkpoints exist
@@ -101,6 +97,10 @@ class Engine(object):
                 # load or fallback checkpoint
                 self.start_epoch = util_engine.load_last_checkpoint_n_get_epoch(self.chkp_path, self.model, self.main_optimizer, location=self.device)
 
+        # Step 2.3: initialize BestModelTracker for Generator
+        self.best_tracker = util_engine.BestModelTracker(mode="min")
+        self.best_tracker.restore(self.chkp_path)
+
         if 'adversarial' in self.train_phase:
             # discriminator
             self.msstftd = SFIMultiScaleSTFTDiscriminator(**config["engine"][self.train_phase]["msstftd"]).to(self.device)
@@ -112,17 +112,16 @@ class Engine(object):
                                             **self.config["engine"]["optimizer_D"].get(self.config["engine"]["optimizer_D"]["name"], {}))
             self.scheduler_disc = sched_cls(self.optimizer_disc,
                                             **self.config["engine"]["scheduler"].get(self.config["engine"]["scheduler"]["name"], {}))
+            log_base = f"log/log_{self.train_phase}_{config_name}"
             self.chkp_path_D = os.path.join(os.path.dirname(os.path.abspath(__file__)), log_base, "weights_D")
             os.makedirs(self.chkp_path_D, exist_ok=True)
+            # Note: start_epoch is overwritten here with D's epoch.
+            # G/D epoch mismatch: training resumes from D's last epoch (legacy behavior).
             self.start_epoch = util_engine.load_last_checkpoint_n_get_epoch(self.chkp_path_D, self.msstftd, self.optimizer_disc, location=self.device)
-
-
-        self.audio_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), log_base, "tensorboard")
-        os.makedirs(self.audio_log_path, exist_ok=True)
-        self.writer_src = util_writer.TBWriter(logdir=self.audio_log_path,
-                                               n_fft = int(config['stft']['frame_length'] * self.fs_src / 1000),
-                                               n_hop = int(config['stft']['frame_shift'] * self.fs_src / 1000),
-                                               sr=self.fs_src)
+            # Step 2.3: initialize BestModelTracker for Discriminator
+            # D uses single-metric L_D_adv tracking (not a composite loss)
+            self.best_tracker_D = util_engine.BestModelTracker(mode="min")
+            self.best_tracker_D.restore(self.chkp_path_D)
 
         # Logging
         input_shape = tuple(self.stft[str(self.fs_in)](torch.randn(1, self.fs_in).to(self.device), cplx=True).squeeze(0).shape) + (2,) # (B, F, T, 2)
@@ -262,7 +261,7 @@ class Engine(object):
 
         self.model.train()
         tot_loss_time, tot_loss_se, tot_loss_rep, tot_loss_pesq, tot_loss_G_fm, tot_loss_G_adv, tot_loss_disc, n_batch = 0, 0, 0, 0, 0, 0, 0, 0
-        pbar = tqdm(total=len(dataloader), unit='batches', bar_format='{l_bar}{bar:25}{r_bar}{bar:-10b}', colour="YELLOW", dynamic_ncols=True)
+        pbar = tqdm(total=len(dataloader), unit='batch', desc='TRAIN', colour="YELLOW", dynamic_ncols=True, bar_format=util_engine.PBAR_FMT)
         for batch in dataloader:
             input_sizes = batch["num_sample"]
             target = batch["clean"].type(torch.float32)
@@ -334,7 +333,7 @@ class Engine(object):
                 'L_G_fm': tot_loss_G_fm/n_batch,
                 'L_D_adv': tot_loss_disc/n_batch
             }
-            pbar.set_postfix({k: f"{v:.2e}" for k, v in dict_loss.items()})
+            pbar.set_postfix(util_engine.format_pbar(dict_loss))
         pbar.close()
 
         return dict_loss, n_batch
@@ -351,7 +350,7 @@ class Engine(object):
 
         self.model.eval()
         tot_loss_time, tot_loss_se, tot_loss_rep, tot_loss_pesq, tot_loss_G_fm, tot_loss_G_adv, tot_loss_disc, n_batch = 0, 0, 0, 0, 0, 0, 0, 0
-        pbar = tqdm(total=len(dataloader), unit='batches', bar_format='{l_bar}{bar:5}{r_bar}{bar:-10b}', colour="RED", dynamic_ncols=True)
+        pbar = tqdm(total=len(dataloader), unit='batch', desc='VALID', colour="RED", dynamic_ncols=True, bar_format=util_engine.PBAR_FMT)
 
         random_sample_idx = 10
         cnt = 0
@@ -415,7 +414,7 @@ class Engine(object):
                     'L_G_fm': tot_loss_G_fm/n_batch,
                     'L_D_adv': tot_loss_disc/n_batch
                 }
-                pbar.set_postfix({k: f"{v:.2e}" for k, v in dict_loss.items()})
+                pbar.set_postfix(util_engine.format_pbar(dict_loss))
             pbar.close()
 
             return dict_loss, n_batch
@@ -444,27 +443,23 @@ class Engine(object):
     def run(self) -> None:
         """Execute full training loop with validation and checkpointing."""
         with torch.cuda.device(self.device):
+            init_start_time = time.time()
             init_loss_dict, _ = self._validate(self.dataloaders['valid'], self.start_epoch-1)
-            logger.info((f"[INIT] Loss(time/mini-batch)\n Epoch {self.start_epoch-1:2d}: "
-                        f"L_time = {init_loss_dict['L_time']:.2e} | "
-                        f"L_se = {init_loss_dict['L_se']:.2e} | "
-                        f"L_rep = {init_loss_dict['L_rep']:.2e} | "
-                        f"L_pesq = {init_loss_dict['L_pesq']:.2e} | "
-                        f"L_G_adv = {init_loss_dict['L_G_adv']:.2e} | "
-                        f"L_G_fm = {init_loss_dict['L_G_fm']:.2e} | "
-                        f"L_D = {init_loss_dict['L_D_adv']:.2e}"))
+            init_elapsed = time.time() - init_start_time
+            logger.info(util_engine.format_epoch_log(
+                self.config_name, self.start_epoch - 1, "INIT", init_loss_dict, init_elapsed))
 
             for epoch in range(self.start_epoch, self.config['engine']['max_epoch'][self.train_phase] + 1):
 
                 # Training
                 train_start_time = time.time()
                 tr_loss_dict, tr_n_batch = self._train(self.dataloaders['train'], epoch)
-                train_end_time   = time.time()
+                train_elapsed = time.time() - train_start_time
 
                 # Validation #! validation is always based on end-to-end (not oracle enhance or restore)
                 val_start_time   = time.time()
                 val_loss_dict, val_n_batch = self._validate(self.dataloaders['valid'], epoch)
-                val_end_time     = time.time()
+                val_elapsed = time.time() - val_start_time
 
                 # Scheduling
                 if epoch > self.config['engine']['start_scheduling'][self.train_phase]:
@@ -472,27 +467,13 @@ class Engine(object):
                     if 'adversarial' in self.train_phase:
                         self.scheduler_disc.step()
 
-
-                # Logging to terminal
-                logger.info((f"[TRAIN] Loss(time/mini-batch)\n Epoch {epoch:2d}:"
-                            f"L_time = {tr_loss_dict['L_time']:.2e} | "
-                            f"L_se = {tr_loss_dict['L_se']:.2e} | "
-                            f"L_rep = {tr_loss_dict['L_rep']:.2e} | "
-                            f"L_pesq = {tr_loss_dict['L_pesq']:.2e} | "
-                            f"L_G_adv = {tr_loss_dict['L_G_adv']:.2e} | "
-                            f"L_G_fm = {tr_loss_dict['L_G_fm']:.2e} | "
-                            f"L_D = {tr_loss_dict['L_D_adv']:.2e} | "
-                            f"Speed = ({train_end_time - train_start_time:.2f}s/{tr_n_batch:d})"))
-                logger.info((f"[VALID] Loss(time/mini-batch)\n Epoch {epoch:2d}:"
-                            f"L_time = {val_loss_dict['L_time']:.2e} | "
-                            f"L_se = {val_loss_dict['L_se']:.2e} | "
-                            f"L_rep = {val_loss_dict['L_rep']:.2e} | "
-                            f"L_pesq = {val_loss_dict['L_pesq']:.2e} | "
-                            f"L_G_adv = {val_loss_dict['L_G_adv']:.2e} | "
-                            f"L_G_fm = {val_loss_dict['L_G_fm']:.2e} | "
-                            f"L_D = {val_loss_dict['L_D_adv']:.2e} | "
-                            f"Speed = ({val_end_time - val_start_time:.2f}s/{val_n_batch:d})"))
-
+                # Logging to terminal (Step 2.4)
+                logger.info(util_engine.format_epoch_log(
+                    self.config_name, epoch, "TRAIN", tr_loss_dict, train_elapsed,
+                    suffix=f" ({tr_n_batch:d} batches)"))
+                logger.info(util_engine.format_epoch_log(
+                    self.config_name, epoch, "VALID", val_loss_dict, val_elapsed,
+                    suffix=f" ({val_n_batch:d} batches)"))
 
                 if 'pretrain' in self.train_phase: # only when pretraining w/o adversarial training
                     val_loss_gen = (val_loss_dict['L_se']*self.w['se'] + val_loss_dict['L_rep']*self.w['ssl'])
@@ -502,23 +483,46 @@ class Engine(object):
                                     + tr_loss_dict['L_G_adv']*self.w['gan'] + tr_loss_dict['L_G_fm']*self.w['fm'])
                     val_loss_gen = (val_loss_dict['L_se']*self.w['se'] + val_loss_dict['L_rep']*self.w['ssl'] + val_loss_dict['L_pesq']*self.w['pesq']
                                     + val_loss_dict['L_G_adv']*self.w['gan'] + val_loss_dict['L_G_fm']*self.w['fm'])
-                # save checkpoint
-                # val_loss_best = util_engine.save_checkpoint_per_best(val_loss_best, val_loss, tr_loss, epoch, self.model, self.main_optimizer, self.chkp_path)
-                util_engine.save_checkpoint_per_nth(1, epoch, self.model, self.main_optimizer, tr_loss_gen, val_loss_gen, self.chkp_path)
-                if 'adversarial' in self.train_phase:
-                    util_engine.save_checkpoint_per_nth(1, epoch, self.msstftd, self.optimizer_disc, tr_loss_dict['L_D_adv'], val_loss_dict['L_D_adv'], self.chkp_path_D)
 
-                # Logging to tensorboard (Tensorboard)
-                self.writer_src.add_scalars("Loss_se", {'Train': tr_loss_dict['L_se'], 'Valid': val_loss_dict['L_se']}, epoch),
-                self.writer_src.add_scalars("Loss_time", {'Train': tr_loss_dict['L_time'], 'Valid': val_loss_dict['L_time']}, epoch),
-                self.writer_src.add_scalars("Loss_rep", {'Train': tr_loss_dict['L_rep'], 'Valid': val_loss_dict['L_rep']}, epoch),
-                if self.train_phase != 'pretrain':
-                    self.writer_src.add_scalars("Loss_G_adv", {'Train': tr_loss_dict['L_G_adv'], 'Valid': val_loss_dict['L_G_adv']}, epoch),
-                    self.writer_src.add_scalars("Loss_G_fm", {'Train': tr_loss_dict['L_G_fm'], 'Valid': val_loss_dict['L_G_fm']}, epoch)
-                    self.writer_src.add_scalars("Loss_D", {'Train': tr_loss_dict['L_D_adv'], 'Valid': val_loss_dict['L_D_adv']}, epoch)
-                    self.writer_src.add_scalars("Loss_pesq", {'Train': tr_loss_dict['L_pesq'], 'Valid': val_loss_dict['L_pesq']}, epoch)
-                self.writer_src.add_scalar("LearningRate", self.main_optimizer.param_groups[0]['lr'], epoch)
-                self.writer_src.flush()
+                # Save checkpoint (Step 2.3)
+                # val_loss_gen is a weighted composite loss (pretrain: L_se + L_rep;
+                # adversarial: 5-term sum). Composite tracking captures overall quality.
+                util_engine.save_checkpoint_optimized(
+                    epoch, self.model, self.main_optimizer, self.chkp_path,
+                    val_metric=val_loss_gen, best_tracker=self.best_tracker,
+                    train_loss=tr_loss_gen, valid_loss=val_loss_gen)
+                if 'adversarial' in self.train_phase:
+                    # L_D_adv is the sole D metric — single-metric tracking is correct here.
+                    util_engine.save_checkpoint_optimized(
+                        epoch, self.msstftd, self.optimizer_disc, self.chkp_path_D,
+                        val_metric=val_loss_dict['L_D_adv'], best_tracker=self.best_tracker_D,
+                        train_loss=tr_loss_dict['L_D_adv'], valid_loss=val_loss_dict['L_D_adv'])
+
+                # Logging to TensorBoard (Step 2.5)
+                # Use add_scalar (singular) with group/key format for cleaner TB grouping.
+                # Bug fix: original condition was `self.train_phase != 'pretrain'` which was
+                # always True since train_phase is e.g. 'pretrain_to48k'. Fixed to substring match.
+                tb_metrics = {
+                    "Loss_se/train": tr_loss_dict['L_se'],
+                    "Loss_se/valid": val_loss_dict['L_se'],
+                    "Loss_time/train": tr_loss_dict['L_time'],
+                    "Loss_time/valid": val_loss_dict['L_time'],
+                    "Loss_rep/train": tr_loss_dict['L_rep'],
+                    "Loss_rep/valid": val_loss_dict['L_rep'],
+                    "LearningRate": self.main_optimizer.param_groups[0]['lr'],
+                }
+                if 'adversarial' in self.train_phase:
+                    tb_metrics.update({
+                        "Loss_G_adv/train": tr_loss_dict['L_G_adv'],
+                        "Loss_G_adv/valid": val_loss_dict['L_G_adv'],
+                        "Loss_G_fm/train": tr_loss_dict['L_G_fm'],
+                        "Loss_G_fm/valid": val_loss_dict['L_G_fm'],
+                        "Loss_D/train": tr_loss_dict['L_D_adv'],
+                        "Loss_D/valid": val_loss_dict['L_D_adv'],
+                        "Loss_pesq/train": tr_loss_dict['L_pesq'],
+                        "Loss_pesq/valid": val_loss_dict['L_pesq'],
+                    })
+                util_engine.log_scalars_to_tb(self.writer_src, tb_metrics, epoch)
 
             logger.info(f"Training for {self.config['engine']['max_epoch']} epoches done!")
 
