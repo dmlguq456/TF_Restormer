@@ -71,9 +71,9 @@ def setup_inference(
     )
     os.makedirs(chkp_path, exist_ok=True)
 
-    # optimizer=None → only model weights are loaded (no optimizer state needed)
-    util_engine.load_last_checkpoint_n_get_epoch(
-        chkp_path, model, optimizer=None, location=device
+    # model-only load — no optimizer state needed for inference
+    util_engine.load_last_checkpoint_n_get_epoch_model_only(
+        chkp_path, model, location=device
     )
 
     engine = EngineInfer(
@@ -373,8 +373,8 @@ def main_infer(args: argparse.Namespace) -> None:
         os.path.dirname(os.path.abspath(__file__)), log_base, "weights"
     )
     os.makedirs(chkp_path, exist_ok=True)
-    util_engine.load_last_checkpoint_n_get_epoch(
-        chkp_path, model_e, optimizer=None, location=device
+    util_engine.load_last_checkpoint_n_get_epoch_model_only(
+        chkp_path, model_e, location=device
     )
     model_e = model_e.to(device)
 

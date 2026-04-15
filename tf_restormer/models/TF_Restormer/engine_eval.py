@@ -52,8 +52,7 @@ class EngineEval(object):
         except KeyError as e:
             logger.warning(f"Loss config key missing: {e}. Loss computation will be skipped (eval-only config?).")
 
-        # optim, scheduler, STFT configuration
-        optim_cls = getattr(torch.optim, self.config["engine"]["optimizer"]["name"])
+        # STFT configuration
         self.stft, self.istft = {}, {}
         self.fs_list = config['fs_list']
         for fs in self.fs_list:
@@ -64,15 +63,14 @@ class EngineEval(object):
         self.out_F = int(config['stft']['frame_length'] * int(self.fs_src) / 1000) // 2 + 1
 
         self.sample_file_list = config['engine'].get('sample_validation', [])
-        # load enhance model
+        # load enhance model (model weights only — no optimizer state needed for eval)
         config_name = self.args.config if hasattr(self.args, 'config') else 'default'
         log_base = f"log/log_{self.train_phase}_{config_name}"
-        self.main_optimizer = optim_cls(self.model.parameters(),
-                                        **self.config["engine"]["optimizer"].get(self.config["engine"]["optimizer"]["name"], {}))
         self.chkp_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), log_base, "weights")
         os.makedirs(self.chkp_path, exist_ok=True)
         assert os.path.exists(self.chkp_path), f"Checkpoint path {self.chkp_path} does not exist!"
-        self.start_epoch = util_engine.load_last_checkpoint_n_get_epoch(self.chkp_path, self.model, self.main_optimizer, location=self.device)
+        util_engine.load_last_checkpoint_n_get_epoch_model_only(self.chkp_path, self.model, location=self.device)
+        self.start_epoch = 1  # epoch is not tracked in eval mode; used only for logging
 
         self.audio_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), log_base, "tensorboard_eval_"+testset_key)
         os.makedirs(self.audio_log_path, exist_ok=True)
