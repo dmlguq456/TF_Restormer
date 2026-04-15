@@ -91,6 +91,162 @@ def _strip_profiling_keys(state_dict: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# _BaseInference
+# ---------------------------------------------------------------------------
+
+class _BaseInference:
+    """Variant-agnostic base class for inference frontends.
+
+    Subclasses must define:
+    - ``_VARIANT`` (str): dot-path to the model package
+      (e.g. ``"tf_restormer.models.TF_Restormer"``).
+    - ``_from_pretrained_impl()`` (classmethod): variant-specific factory that
+      builds the model and returns an initialised instance.
+
+    Instance creation uses ``cls.__new__(cls)`` + direct attribute assignment
+    inside ``_from_pretrained_impl()``, so ``_BaseInference`` deliberately does
+    **not** define ``__init__``.
+    """
+
+    _VARIANT: str  # set by subclass
+
+    # Declare ``engine`` so that the ``device`` property below can reference
+    # ``self.engine`` without type-checker errors.  The actual value is
+    # assigned by ``_from_pretrained_impl()`` in the subclass.
+    engine: "EngineInfer"
+
+    # ------------------------------------------------------------------
+    # HF Hub helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_hf_repo_id(path_or_id: str | None) -> bool:
+        """Return True if *path_or_id* looks like a HF Hub repo ID (owner/name).
+
+        A valid repo ID:
+        - Has exactly one ``/`` separator (two parts).
+        - Does NOT point to an existing local path.
+        - Does NOT end with a file extension (``.pt``, ``.pth``, ``.yaml``).
+
+        Args:
+            path_or_id: Candidate string to test.
+
+        Returns:
+            ``True`` if the string matches the HF Hub repo ID pattern.
+        """
+        if path_or_id is None:
+            return False
+        s = str(path_or_id)
+        if Path(s).exists():
+            return False
+        parts = s.split("/")
+        if len(parts) != 2:
+            return False
+        return not any(p.endswith((".pt", ".pth", ".yaml", ".pkl")) for p in parts)
+
+    @classmethod
+    def _download_from_hub(
+        cls,
+        repo_id: str,
+        config: str | Path | dict | None,
+    ) -> tuple[Path, str | Path | dict | None]:
+        """Download ``model.pt`` (and optionally ``config.yaml``) from HF Hub.
+
+        Args:
+            repo_id: HF Hub repo ID, e.g. ``"shinuh/tf-restormer-baseline"``.
+            config:  Current config argument.  If ``None`` or not a local file,
+                     ``config.yaml`` is also downloaded from the repo.
+
+        Returns:
+            ``(checkpoint_path, config)`` — both pointing to local cached files.
+
+        Raises:
+            ImportError: If ``huggingface_hub`` is not installed.
+        """
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError:
+            raise ImportError(
+                "huggingface_hub is required for HF Hub downloads. "
+                "Install with: pip install tf-restormer[hub]  "
+                "or: uv sync --extra hub"
+            ) from None
+
+        ckpt_path = Path(hf_hub_download(repo_id=repo_id, filename="model.pt"))
+        logger.info(f"Downloaded checkpoint from HF Hub: {repo_id}/model.pt -> {ckpt_path}")
+
+        # Download config from repo if user did not provide a config that already
+        # exists as a local file.  Extension alone is not a reliable indicator —
+        # a user may pass "baseline.yaml" intending the Hub copy.
+        need_config = config is None or (
+            isinstance(config, str)
+            and not Path(config).is_file()
+        )
+        if need_config:
+            config = str(Path(hf_hub_download(repo_id=repo_id, filename="config.yaml")))
+            logger.info(f"Downloaded config from HF Hub: {repo_id}/config.yaml -> {config}")
+
+        return ckpt_path, config
+
+    # ------------------------------------------------------------------
+    # Factory
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        config: str | Path | dict = "baseline.yaml",
+        checkpoint_path: str | Path | None = None,
+        device: str | torch.device = "cuda",
+        fs_src: int | None = None,
+        fs_in: int | None = None,
+        **kwargs,
+    ) -> "_BaseInference":
+        """Create an inference instance from a config and checkpoint.
+
+        Args:
+            config: Config name (e.g. ``"baseline"`` or ``"baseline.yaml"``),
+                absolute path to a YAML file, or a pre-loaded config dict.
+            checkpoint_path: One of:
+                - Local ``.pt`` / ``.pth`` file path
+                - Local directory (latest checkpoint is auto-selected)
+                - HF Hub repo ID (e.g. ``"shinuh/tf-restormer-baseline"``)
+                - ``None`` — looks in ``tf_restormer/checkpoints/{config_stem}/model.pt``
+            device: PyTorch device string (``"cuda"``, ``"cpu"``, etc.).
+            fs_src: Output sample rate the model produces (Hz).  Overrides
+                the value read from the training config.  Most users should
+                leave this as ``None``; the correct value (e.g. 48000) is
+                read from ``config["dataset"][config["dataset_phase"]]``.
+            fs_in:  Input sample rate the model expects (Hz).  Overrides the
+                training config value (e.g. 16000).
+            **kwargs: Reserved for future use.
+
+        Returns:
+            Initialized instance ready for inference.
+
+        Raises:
+            FileNotFoundError: If the checkpoint cannot be located.
+            ValueError: If the checkpoint format is unrecognized.
+        """
+        logger.disable("tf_restormer")
+        try:
+            return cls._from_pretrained_impl(
+                config, checkpoint_path, device, fs_src, fs_in, **kwargs
+            )
+        finally:
+            logger.enable("tf_restormer")
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+
+    @property
+    def device(self) -> torch.device:
+        """PyTorch device the model runs on."""
+        return self.engine.device
+
+
+# ---------------------------------------------------------------------------
 # InferenceSession
 # ---------------------------------------------------------------------------
 
@@ -322,7 +478,7 @@ class InferenceSession:
 # SEInference
 # ---------------------------------------------------------------------------
 
-class SEInference:
+class SEInference(_BaseInference):
     """Public inference API for TF_Restormer speech enhancement.
 
     Waveform-level API::
@@ -354,53 +510,11 @@ class SEInference:
         follows the convention established in ``engine_infer.py:L48``.
     """
 
+    _VARIANT = "tf_restormer.models.TF_Restormer"
+
     # ------------------------------------------------------------------
-    # Construction
+    # Construction  (variant-specific factory — called by _BaseInference.from_pretrained)
     # ------------------------------------------------------------------
-
-    @classmethod
-    def from_pretrained(
-        cls,
-        config: str | Path | dict = "baseline.yaml",
-        checkpoint_path: str | Path | None = None,
-        device: str | torch.device = "cuda",
-        fs_src: int | None = None,
-        fs_in: int | None = None,
-        **kwargs,
-    ) -> "SEInference":
-        """Create an :class:`SEInference` from a config and checkpoint.
-
-        Args:
-            config: Config name (e.g. ``"baseline"`` or ``"baseline.yaml"``),
-                absolute path to a YAML file, or a pre-loaded config dict.
-            checkpoint_path: One of:
-                - Local ``.pt`` / ``.pth`` file path
-                - Local directory (latest checkpoint is auto-selected)
-                - HF Hub repo ID (e.g. ``"shinuh/tf-restormer-baseline"``)
-                - ``None`` — looks in ``tf_restormer/checkpoints/{config_stem}/model.pt``
-            device: PyTorch device string (``"cuda"``, ``"cpu"``, etc.).
-            fs_src: Output sample rate the model produces (Hz).  Overrides
-                the value read from the training config.  Most users should
-                leave this as ``None``; the correct value (e.g. 48000) is
-                read from ``config["dataset"][config["dataset_phase"]]``.
-            fs_in:  Input sample rate the model expects (Hz).  Overrides the
-                training config value (e.g. 16000).
-            **kwargs: Reserved for future use.
-
-        Returns:
-            Initialized :class:`SEInference` ready for inference.
-
-        Raises:
-            FileNotFoundError: If the checkpoint cannot be located.
-            ValueError: If the checkpoint format is unrecognized.
-        """
-        logger.disable("tf_restormer")
-        try:
-            return cls._from_pretrained_impl(
-                config, checkpoint_path, device, fs_src, fs_in, **kwargs
-            )
-        finally:
-            logger.enable("tf_restormer")
 
     @classmethod
     def _from_pretrained_impl(
@@ -603,75 +717,6 @@ class SEInference:
         resolved_in = int(fs_in) if fs_in is not None else _cfg_in
         return resolved_src, resolved_in
 
-    @staticmethod
-    def _is_hf_repo_id(path_or_id: str | None) -> bool:
-        """Return True if *path_or_id* looks like a HF Hub repo ID (owner/name).
-
-        A valid repo ID:
-        - Has exactly one ``/`` separator (two parts).
-        - Does NOT point to an existing local path.
-        - Does NOT end with a file extension (``.pt``, ``.pth``, ``.yaml``).
-
-        Args:
-            path_or_id: Candidate string to test.
-
-        Returns:
-            ``True`` if the string matches the HF Hub repo ID pattern.
-        """
-        if path_or_id is None:
-            return False
-        s = str(path_or_id)
-        if Path(s).exists():
-            return False
-        parts = s.split("/")
-        if len(parts) != 2:
-            return False
-        return not any(p.endswith((".pt", ".pth", ".yaml", ".pkl")) for p in parts)
-
-    @classmethod
-    def _download_from_hub(
-        cls,
-        repo_id: str,
-        config: str | Path | dict | None,
-    ) -> tuple[Path, str | Path | dict | None]:
-        """Download ``model.pt`` (and optionally ``config.yaml``) from HF Hub.
-
-        Args:
-            repo_id: HF Hub repo ID, e.g. ``"shinuh/tf-restormer-baseline"``.
-            config:  Current config argument.  If ``None`` or not a local file,
-                     ``config.yaml`` is also downloaded from the repo.
-
-        Returns:
-            ``(checkpoint_path, config)`` — both pointing to local cached files.
-
-        Raises:
-            ImportError: If ``huggingface_hub`` is not installed.
-        """
-        try:
-            from huggingface_hub import hf_hub_download
-        except ImportError:
-            raise ImportError(
-                "huggingface_hub is required for HF Hub downloads. "
-                "Install with: pip install tf-restormer[hub]  "
-                "or: uv sync --extra hub"
-            ) from None
-
-        ckpt_path = Path(hf_hub_download(repo_id=repo_id, filename="model.pt"))
-        logger.info(f"Downloaded checkpoint from HF Hub: {repo_id}/model.pt -> {ckpt_path}")
-
-        # Download config from repo if user did not provide a config that already
-        # exists as a local file.  Extension alone is not a reliable indicator —
-        # a user may pass "baseline.yaml" intending the Hub copy.
-        need_config = config is None or (
-            isinstance(config, str)
-            and not Path(config).is_file()
-        )
-        if need_config:
-            config = str(Path(hf_hub_download(repo_id=repo_id, filename="config.yaml")))
-            logger.info(f"Downloaded config from HF Hub: {repo_id}/config.yaml -> {config}")
-
-        return ckpt_path, config
-
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
@@ -697,11 +742,6 @@ class SEInference:
         Use :meth:`get_istft` for a convenient lookup.
         """
         return self.engine.istft
-
-    @property
-    def device(self) -> torch.device:
-        """PyTorch device the model runs on."""
-        return self.engine.device
 
     def get_stft(self, fs: int):
         """Return the STFT module for the given sample rate.
