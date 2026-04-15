@@ -41,7 +41,7 @@ def get_dataloaders(args: argparse.Namespace, phase: str, dataset_config: dict, 
 
     for partition in partitions:
         if partition in ["train", "valid"]:
-            dataset = SynthesisDataset(partition, dataset_config[phase], dataset_config['sythesis_config'])
+            dataset = SynthesisDataset(partition, dataset_config[phase], dataset_config['synthesis_config'])
         else:
             testset_name = dataset_config['testset_key']
             dataset = EvalDataset(dataset_config[testset_name])

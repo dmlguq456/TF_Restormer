@@ -20,7 +20,7 @@ config:
             valid:
                 spk: "cv_s.scp"
                 noise: "tr_n.scp"  ## noise list does not matches to spks
-        sythesis_config:
+        synthesis_config:
             multi_spk_prob: 0.2
             rir:
                 prob: 0.5
@@ -230,50 +230,38 @@ config:
                             'data/valid_sample/VoxCeleb_sample/m99-id10297-FvbLoirHpx0-00006.wav',
                             ]
         # -------------------------------------------------------------------------------------------------- #
-        optimizer:
-            name: "AdamW" ### Choose a torch.optim's class(=attribute) e.g. ["Adam", "AdamW", "SGD", ...]
+        optimizer:  # alternatives: Adam, SGD
+            name: "AdamW"
             AdamW:
                 lr: 2.0e-4
                 betas: [0.9, 0.995]
                 weight_decay: 1.0e-2
-            Adam:
-                lr: 1.0e-3
-                weight_decay : 0.0
         # -------------------------------- #
-        optimizer_D:
-            name: "AdamW" ### Choose a torch.optim's class(=attribute) e.g. ["Adam", "AdamW", "SGD", ...]
+        optimizer_D:  # discriminator optimizer
+            name: "AdamW"
             AdamW:
                 lr: 2.0e-4
                 betas: [0.8, 0.999]
                 weight_decay: 1.0e-2
-            Adam:
-                lr: 1.0e-3
-                weight_decay : 0.0
         # -------------------------------- #
-        scheduler:
-            name: "StepLR" # ReduceLROnPlateau, 
+        scheduler:  # alternatives: ReduceLROnPlateau, CosineAnnealingLR
+            name: "StepLR"
             WarmupConstantSchedule:
                 warmup_steps: 10000
-            ReduceLROnPlateau:
-                mode: "min"
-                min_lr: 1.0e-10
-                factor: 0.5
-                patience: 2
             StepLR:
                 step_size: 1
                 gamma: 0.9
         # -------------------------------------------------------------------------------------------------- #
-        inference:
-            alpha: 0.2
-            max_iter: 3
-        # -------------------------------- #
-        max_epoch: 
+        max_epoch:
             pretrain_to48k: 20
             adversarial_to48k: 20
         gpuid: "1"
         clip_norm: 10
-        start_scheduling: 
+        start_scheduling:
             pretrain_to48k: 10
             adversarial_to48k: 1
-
+    # -------------------------------------- Inference ---------------------------------------- #
+    inference:
+        alpha: 0.2
+        max_iter: 3
 
