@@ -167,9 +167,7 @@ class EngineInfer:
         _fs_in = fs_in if fs_in is not None else self.fs_in
         _fs_out = fs_out if fs_out is not None else self.fs_src
 
-        wav = waveform.to(self.device).to(torch.float32)
-        if wav.dim() == 2:
-            wav = wav.squeeze(0)   # (L,)
+        wav = self._preprocess_waveform(waveform)
 
         threshold_samples = int(self.chunk_sec * _fs_in)
 
@@ -318,3 +316,20 @@ class EngineInfer:
             fs_in=fs_in,
             fs_out=fs_out,
         )
+
+    def _preprocess_waveform(self, waveform: torch.Tensor) -> torch.Tensor:
+        """Normalize waveform shape and transfer to device.
+
+        Ensures consistent (L,) shape and float32 dtype on self.device.
+        SE variant: identity-like — only shape/dtype/device normalization.
+
+        Args:
+            waveform: 1-D (L,) or 2-D (1, L) waveform tensor.
+
+        Returns:
+            Tensor of shape (L,) on self.device with float32 dtype.
+        """
+        wav = waveform.to(self.device).to(torch.float32)
+        if wav.dim() == 2:
+            wav = wav.squeeze(0)  # (1, L) -> (L,)
+        return wav
