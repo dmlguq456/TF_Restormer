@@ -73,7 +73,7 @@ class EngineInfer:
         # ------------------------------------------------------------------
         # Chunked-streaming defaults (can be overridden per-call)
         # ------------------------------------------------------------------
-        _infer_cfg = config.get("engine", {}).get("inference", {})
+        _infer_cfg = config.get("inference", {})
         self.chunk_sec: float = _infer_cfg.get("chunk_sec", 4.0)
         self.overlap_sec: float = _infer_cfg.get("overlap_sec", 0.5)
 
