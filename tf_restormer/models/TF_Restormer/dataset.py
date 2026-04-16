@@ -19,13 +19,12 @@ from torchaudio.functional import resample as torch_resample
 
 
 @logger_wraps()
-def get_dataloaders(args: argparse.Namespace, phase: str, dataset_config: dict, loader_config: dict) -> dict:
+def get_dataloaders(args: argparse.Namespace, dataset_config: dict, loader_config: dict) -> dict:
     """Create train/valid/test DataLoaders based on engine mode.
 
     Args:
         args: CLI arguments (engine_mode determines partition split).
-        phase: Dataset phase key in config (e.g., 'to16k', 'to48k').
-        dataset_config: Dataset section of YAML config.
+        dataset_config: Dataset section of YAML config (flat, no phase sub-key).
         loader_config: DataLoader section of YAML config.
 
     Returns:
@@ -34,14 +33,10 @@ def get_dataloaders(args: argparse.Namespace, phase: str, dataset_config: dict, 
     # create dataset object for each partition
     partitions = ["train", "valid"] if args.engine_mode == "train"  else ["test"]
     dataloaders = {}
-    
-    # DB_ROOT from YAML config (required for train/valid)
-    if phase in dataset_config:
-        db_root = dataset_config[phase].get('db_root', None)
 
     for partition in partitions:
         if partition in ["train", "valid"]:
-            dataset = SynthesisDataset(partition, dataset_config[phase], dataset_config['synthesis_config'])
+            dataset = SynthesisDataset(partition, dataset_config, dataset_config['synthesis_config'])
         else:
             testset_name = dataset_config['testset_key']
             dataset = EvalDataset(dataset_config[testset_name])

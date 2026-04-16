@@ -551,6 +551,34 @@ def save_checkpoint_optimized(
     return is_best
 
 
+def resolve_log_base(train_phase: str, config_name: str, base_dir: str) -> str:
+    """Return the log directory base path, with backward-compatible fallback.
+
+    Tries the new naming convention first (e.g. ``log_adversarial_baseline.yaml``),
+    then falls back to the legacy ``_to48k`` naming (e.g.
+    ``log_adversarial_to48k_baseline.yaml``) for checkpoints created before
+    the config simplification.
+
+    Args:
+        train_phase: Current train phase name (e.g. ``"pretrain"``, ``"adversarial"``).
+        config_name: Config file name (e.g. ``"baseline.yaml"``).
+        base_dir: Root directory containing the ``log/`` folder.
+
+    Returns:
+        Relative log base path like ``log/log_{phase}_{config_name}``
+        (new or legacy, whichever exists on disk; new name preferred).
+    """
+    new_base = f"log/log_{train_phase}_{config_name}"
+    if os.path.isdir(os.path.join(base_dir, new_base, "weights")):
+        return new_base
+    # backward compat: try legacy _to48k naming
+    legacy_base = f"log/log_{train_phase}_to48k_{config_name}"
+    if os.path.isdir(os.path.join(base_dir, legacy_base, "weights")):
+        return legacy_base
+    # Neither exists yet — use new naming (will be created by makedirs)
+    return new_base
+
+
 # ── Step 1.5: setup_logging ───────────────────────────────────────────────────
 
 def setup_logging(
@@ -565,7 +593,10 @@ def setup_logging(
 ) -> tuple[str, "TBWriter", int]:
     """Create log directories, load latest checkpoint, and return a TBWriter.
 
-    Constructs log paths as:
+    Constructs log paths via ``resolve_log_base()``, which tries the new naming
+    convention first (e.g. ``log_pretrain_baseline.yaml``) then falls back to the
+    legacy ``_to48k`` naming (e.g. ``log_pretrain_to48k_baseline.yaml``) for
+    checkpoints created before the config simplification:
         ``<base_dir>/log/log_<train_phase>_<config_name>/weights``
         ``<base_dir>/log/log_<train_phase>_<config_name>/tensorboard``
 
@@ -582,7 +613,7 @@ def setup_logging(
 
     Args:
         config_name: Config filename (e.g., ``baseline.yaml``). Kept with extension.
-        train_phase: Training phase string (e.g., ``pretrain_to48k``).
+        train_phase: Training phase string (e.g., ``pretrain``, ``adversarial``).
         base_dir: Absolute path to the directory containing the ``log/`` folder
                   (typically ``os.path.dirname(os.path.abspath(__file__))``).
         model: Model to load checkpoint weights into (mutated in-place).
@@ -596,7 +627,7 @@ def setup_logging(
     """
     from tf_restormer.utils.util_writer import TBWriter
 
-    log_base = f"log/log_{train_phase}_{config_name}"
+    log_base = resolve_log_base(train_phase, config_name, base_dir)
     chkp_path = os.path.join(base_dir, log_base, "weights")
     audio_log_path = os.path.join(base_dir, log_base, "tensorboard")
     os.makedirs(chkp_path, exist_ok=True)

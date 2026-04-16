@@ -3,8 +3,7 @@ notes: "basic model = offline + 8k&16k"
 config:
     # ========================== Key Variables ============================== #
     train_phase: &var_tr_phase "adversarial"  # pretrain / adversarial
-    dataset_phase: "to48k"
-    train_phase_list: ['pretrain_to48k', 'adversarial_to48k']
+    train_phase_list: ['pretrain', 'adversarial']
 
     # -- architecture --
     online: &var_online False          # False=TF-Locoformer (offline), True=Mamba (online)
@@ -27,22 +26,27 @@ config:
     ssl_model_key: &var_SSL_model_key "microsoft/wavlm-large"
     win_48k: &var_win_48k [1920]
     win_48k_disc: &var_win_48k_disc [20, 40, 60, 80, 100]  # ms — discriminator window lengths
+    fs_src: &var_fs_src 48000
+    fs_in: &var_fs_in 16000
 
+    # ================================ STFT ================================ #
+    stft:                               # base length is based on 16kHz
+        frame_length: 40                # ms (not samples)
+        frame_shift: 20                 # ms (not samples)
     # ============================== Dataset =============================== #
     dataset:
-        to48k:
-            max_len: 3              # audio length (seconds)
-            sample_rate_src: 48000
-            sample_rate_in: 16000
-            db_root: "/home/DB/VCTK"
-            rir_dir: "/home/DB/DNS_RIR_48k"
-            scp_dir: "data/scp/scp_VCTK"
-            train:
-                spk: "tr_s.scp"
-                noise: "tr_n.scp"
-            valid:
-                spk: "cv_s.scp"
-                noise: "tr_n.scp"
+        max_len: 3              # audio length (seconds)
+        sample_rate_src: *var_fs_src
+        sample_rate_in: *var_fs_in
+        db_root: "/home/DB/VCTK"
+        rir_dir: "/home/DB/DNS_RIR_48k"
+        scp_dir: "data/scp/scp_VCTK"
+        train:
+            spk: "tr_s.scp"
+            noise: "tr_n.scp"
+        valid:
+            spk: "cv_s.scp"
+            noise: "tr_n.scp"
         synthesis_config:
             multi_spk_prob: 0.2
             rir:
@@ -72,10 +76,6 @@ config:
         pin_memory: false
         num_workers: 0
         drop_last: false
-    # ================================ STFT ================================ #
-    stft:                               # base length is based on 16kHz
-        frame_length: 40                # ms (not samples)
-        frame_shift: 20                 # ms (not samples)
     # =============================== Model ================================ #
     model:
         online: *var_online
@@ -169,7 +169,7 @@ config:
             valid:
                 subset: true
                 num_per_epoch: 2000
-        pretrain_to48k:
+        pretrain:
             downsample_src:
                 prob: 0.6
                 fs_list_src: [16000, 24000, 44100]
@@ -192,7 +192,7 @@ config:
                 f_len: [0, 10]
                 t_num: [0, 2]
                 f_num: [0, 3]
-        adversarial_to48k:
+        adversarial:
             downsample_src:
                 prob: 0.6
                 fs_list_src: [16000, 24000, 44100]
@@ -257,13 +257,13 @@ config:
                 step_size: 1
                 gamma: 0.9
         max_epoch:
-            pretrain_to48k: 20
-            adversarial_to48k: 20
+            pretrain: 20
+            adversarial: 20
         gpuid: "1"
         clip_norm: 10
         start_scheduling:
-            pretrain_to48k: 10
-            adversarial_to48k: 1
+            pretrain: 10
+            adversarial: 1
     # ============================= Inference ============================== #
     inference:
         alpha: 0.2

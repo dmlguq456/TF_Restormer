@@ -12,29 +12,30 @@ TF-Restormer implements a Time-Frequency domain Restormer architecture for singl
 
 ## Installation
 
-**Requirements**: Python 3.10+, [uv](https://docs.astral.sh/uv/)
+**Requirements**: Python 3.10+
+
+### pip (library usage)
 
 ```bash
 pip install tf-restormer
+
+# With streaming model support (Mamba)
+pip install tf-restormer[mamba]
 ```
 
-Or install from source:
+### From source (development / training)
+
+Requires [uv](https://docs.astral.sh/uv/).
 
 ```bash
 git clone https://github.com/shinuh/TF-Restormer.git
 cd TF-Restormer
 
-# Inference only (CUDA 12.4)
-uv sync --extra cu124
-
-# With streaming model support (Mamba)
-uv sync --extra cu124 --extra mamba
-
-# CPU-only
-uv sync --extra cpu
+uv sync --extra cu124                              # CUDA 12.4 inference
+uv sync --extra cu124 --extra train                # + training dependencies
+uv sync --extra cu124 --extra train --extra mamba  # + streaming model (Mamba)
+uv sync --extra cpu                                # CPU-only
 ```
-
-> The `--extra mamba` flag installs `mamba-ssm` and `causal-conv1d`, required only for the streaming (online) model.
 
 ## Quick Start
 

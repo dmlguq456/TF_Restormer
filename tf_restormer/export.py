@@ -47,7 +47,7 @@ import torch
 from loguru import logger
 
 from tf_restormer._config import _VARIANT_MAP, load_config, resolve_config
-from tf_restormer.utils.util_engine import _find_latest_checkpoint, _fix_compiled_state_dict
+from tf_restormer.utils.util_engine import _find_latest_checkpoint, _fix_compiled_state_dict, resolve_log_base
 
 
 _DEFAULT_CKPT_HOME = Path(__file__).resolve().parent / "checkpoints"
@@ -77,9 +77,9 @@ def _resolve_source_dir(
     The checkpoint directory follows the convention established by
     ``main_infer.py:L75-78``::
 
-        <variant_dir>/log/log_{train_phase}_{dataset_phase}_{config_name}/weights/
+        <variant_dir>/log/log_{train_phase}_{config_name}/weights/
 
-    where ``train_phase`` and ``dataset_phase`` come from the config YAML
+    where ``train_phase`` comes from the config YAML
     and ``config_name`` includes the ``.yaml`` extension.
 
     ``importlib.resources.files("tf_restormer.models.TF_Restormer")`` is used
@@ -116,13 +116,13 @@ def _resolve_source_dir(
         str(importlib.resources.files("tf_restormer.models.TF_Restormer"))
     )
 
-    # Load config to extract train_phase / dataset_phase
+    # Load config to extract train_phase
     yaml_dict = load_config(variant, config_name)
     config = yaml_dict["config"]
-    train_phase = config["train_phase"] + "_" + config["dataset_phase"]
+    train_phase = config["train_phase"]
 
-    # Mirror main_infer.py:L76
-    log_base = f"log/log_{train_phase}_{config_name}"
+    # Mirror main_infer.py — use resolve_log_base for backward-compatible path discovery
+    log_base = resolve_log_base(train_phase, config_name, str(variant_dir))
     chkp_dir = variant_dir / log_base / "weights"
 
     if not chkp_dir.is_dir():
