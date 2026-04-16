@@ -7,35 +7,31 @@ Time-Frequency domain Restormer for speech enhancement.
 
 TF-Restormer implements a Time-Frequency domain Restormer architecture for single-channel speech enhancement. The model operates in the STFT domain with a Restormer encoder-decoder backbone featuring channel attention and gated feed-forward networks. It accepts wideband (16 kHz) input and produces fullband (48 kHz) enhanced output. Two model variants are available:
 
-- **Offline** (TF-Locoformer) — non-causal, higher quality
+- **Offline** (attention) — non-causal, higher quality
 - **Online** (Mamba SSM) — causal streaming, low latency
 
 ## Installation
 
 **Requirements**: Python 3.10+
 
-### pip
+### Library users (pip)
+
+For using TF-Restormer as a library in your own project. Requires PyTorch pre-installed in your environment.
 
 ```bash
+# From local source
 git clone https://github.com/shinuh/TF-Restormer.git
 cd TF-Restormer
-
-# 1. Install PyTorch for your CUDA version first
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
-
-# 2. Install tf-restormer (editable)
-pip install -e .
-
-# With training dependencies
-pip install -e ".[train]"
-
-# With streaming model (Mamba)
-pip install -e ".[mamba]"
+pip install -e .                # inference only
+pip install -e ".[hub]"         # + HF Hub support
+pip install -e ".[mamba]"       # + streaming model (Mamba)
 ```
 
-### uv (recommended for development / training)
+> **NOTE**: PyTorch is **not** included — install it separately via [pytorch.org](https://pytorch.org/get-started/locally/) to match your CUDA version.
 
-[uv](https://docs.astral.sh/uv/) handles PyTorch CUDA index routing automatically.
+### Development / CLI (uv)
+
+For training, evaluation, and running `run.py` directly. Uses [uv](https://docs.astral.sh/uv/) for dependency management with conflict-safe PyTorch index routing.
 
 ```bash
 git clone https://github.com/shinuh/TF-Restormer.git
@@ -46,6 +42,8 @@ uv sync --extra cu124 --extra train                # + training dependencies
 uv sync --extra cu124 --extra train --extra mamba  # + streaming model (Mamba)
 uv sync --extra cpu                                # CPU-only
 ```
+
+> **NOTE**: Do not use `uv sync --extra train` alone — always combine with an accelerator extra (`cu124`/`cu126`/`cpu`).
 
 ## Quick Start
 
@@ -91,7 +89,7 @@ Pretrained checkpoints will be available on [Hugging Face Hub](https://huggingfa
 
 | Model | Repo ID | Description |
 |---|---|---|
-| Offline | `shinuh/tf-restormer-baseline` | TF-Locoformer, 48 kHz output |
+| Offline | `shinuh/tf-restormer-baseline` | Attention, 48 kHz output |
 | Online | `shinuh/tf-restormer-streaming` | Mamba SSM, causal streaming |
 
 ```python
