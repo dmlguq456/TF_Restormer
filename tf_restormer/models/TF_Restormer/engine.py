@@ -13,6 +13,7 @@ from torchaudio.functional import resample as torch_resample
 from torchaudio.io import AudioEffector, CodecConfig
 from torch.utils.data import DataLoader
 from tf_restormer.utils import util_engine, util_stft
+from tf_restormer.utils.util_engine import resolve_log_base
 from tf_restormer.utils.decorators import logger_wraps
 from .loss import SSL_FM_Loss, MS_STFT_Gen_SC_Loss, Time_Domain_L1, HF_Loss
 from .modules.msstftd import SFIMultiScaleSTFTDiscriminator
@@ -35,11 +36,10 @@ class Engine(object):
         self.subset_conf = {}
         self.subset_conf["train"] = config["engine"]["subset"]["train"]
         self.subset_conf["valid"] = config["engine"]["subset"]["valid"]
-        self.fs_src = config["dataset"][config["dataset_phase"]]["sample_rate_src"]
-        self.fs_in = config["dataset"][config["dataset_phase"]]["sample_rate_in"]
+        self.fs_src = config["dataset"]["sample_rate_src"]
+        self.fs_in = config["dataset"]["sample_rate_in"]
 
-        # pretrain_to16k / pretrain_to48k / adversarial_to16k / adversarial_to48k
-        self.train_phase = config["train_phase"] + '_' + config["dataset_phase"]
+        self.train_phase = config["train_phase"]
         # loss configuration
 
         # STFT configuration
@@ -86,8 +86,9 @@ class Engine(object):
                 # locate pretrain checkpoint directory
                 prev_stage = train_phase_list[train_phase_list.index(self.train_phase) - 1]
 
-                prev_log_base = f"log_{prev_stage}_{config_name}"
-                pretrain_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log", prev_log_base, "weights")
+                base_dir = os.path.dirname(os.path.abspath(__file__))
+                prev_log_base = resolve_log_base(prev_stage, config_name, base_dir)
+                pretrain_dir = os.path.join(base_dir, prev_log_base, "weights")
                 pre_files = sorted([f for f in os.listdir(pretrain_dir) if f.endswith('.pth')])
                 if pre_files:
                     last_ckpt = pre_files[-1]
@@ -112,8 +113,7 @@ class Engine(object):
                                             **self.config["engine"]["optimizer_D"].get(self.config["engine"]["optimizer_D"]["name"], {}))
             self.scheduler_disc = sched_cls(self.optimizer_disc,
                                             **self.config["engine"]["scheduler"].get(self.config["engine"]["scheduler"]["name"], {}))
-            log_base = f"log/log_{self.train_phase}_{config_name}"
-            self.chkp_path_D = os.path.join(os.path.dirname(os.path.abspath(__file__)), log_base, "weights_D")
+            self.chkp_path_D = os.path.join(os.path.dirname(self.chkp_path), "weights_D")
             os.makedirs(self.chkp_path_D, exist_ok=True)
             # Note: start_epoch is overwritten here with D's epoch.
             # G/D epoch mismatch: training resumes from D's last epoch (legacy behavior).
@@ -500,8 +500,8 @@ class Engine(object):
 
                 # Logging to TensorBoard (Step 2.5)
                 # Use add_scalar (singular) with group/key format for cleaner TB grouping.
-                # Bug fix: original condition was `self.train_phase != 'pretrain'` which was
-                # always True since train_phase is e.g. 'pretrain_to48k'. Fixed to substring match.
+                # train_phase is now directly 'pretrain' or 'adversarial'; substring match
+                # kept for forward compatibility with any future phase variants.
                 tb_metrics = {
                     "Loss_se/train": tr_loss_dict['L_se'],
                     "Loss_se/valid": val_loss_dict['L_se'],

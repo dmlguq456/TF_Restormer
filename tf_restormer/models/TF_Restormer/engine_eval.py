@@ -9,6 +9,7 @@ from tqdm import tqdm
 import torchaudio.transforms as T
 from torch.utils.data import DataLoader
 from tf_restormer.utils import util_engine, util_stft, util_writer
+from tf_restormer.utils.util_engine import resolve_log_base
 from tf_restormer.utils.metrics import compute_metric
 from tf_restormer.utils.decorators import logger_wraps
 
@@ -38,7 +39,7 @@ class EngineEval(object):
                                     lowpass_filter_width=32,
                                     rolloff=0.98).to(self.device)
         # loss configuration (lazy import — optional train extras)
-        self.train_phase = config["train_phase"] + '_' + config["dataset_phase"]
+        self.train_phase = config["train_phase"]
         self._loss_modules_available = False
         try:
             from .loss import SSL_FM_Loss, MS_STFT_Gen_SC_Loss, Time_Domain_L1
@@ -65,14 +66,15 @@ class EngineEval(object):
         self.sample_file_list = config['engine'].get('sample_validation', [])
         # load enhance model (model weights only — no optimizer state needed for eval)
         config_name = self.args.config if hasattr(self.args, 'config') else 'default'
-        log_base = f"log/log_{self.train_phase}_{config_name}"
-        self.chkp_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), log_base, "weights")
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        log_base = resolve_log_base(self.train_phase, config_name, base_dir)
+        self.chkp_path = os.path.join(base_dir, log_base, "weights")
         os.makedirs(self.chkp_path, exist_ok=True)
         assert os.path.exists(self.chkp_path), f"Checkpoint path {self.chkp_path} does not exist!"
         util_engine.load_last_checkpoint_n_get_epoch_model_only(self.chkp_path, self.model, location=self.device)
         self.start_epoch = 1  # epoch is not tracked in eval mode; used only for logging
 
-        self.audio_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), log_base, "tensorboard_eval_"+testset_key)
+        self.audio_log_path = os.path.join(base_dir, log_base, "tensorboard_eval_"+testset_key)
         os.makedirs(self.audio_log_path, exist_ok=True)
         self.writer_src = util_writer.TBWriter(logdir=self.audio_log_path,
                                                n_fft=config['stft']['frame_length'] * self.fs_src // 16000,

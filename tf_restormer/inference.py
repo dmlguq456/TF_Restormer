@@ -216,7 +216,7 @@ class _BaseInference:
             fs_src: Output sample rate the model produces (Hz).  Overrides
                 the value read from the training config.  Most users should
                 leave this as ``None``; the correct value (e.g. 48000) is
-                read from ``config["dataset"][config["dataset_phase"]]``.
+                read from ``config["dataset"]``.
             fs_in:  Input sample rate the model expects (Hz).  Overrides the
                 training config value (e.g. 16000).
             **kwargs: Reserved for future use.
@@ -674,7 +674,7 @@ class SEInference(_BaseInference):
 
         Priority:
         1. Explicit kwargs (fs_src / fs_in) — highest priority.
-        2. Training config: ``config["dataset"][config["dataset_phase"]]``.
+        2. Training config: ``config["dataset"]``.
         3. Hardcoded fallback: fs_src=48000, fs_in=16000.
 
         Args:
@@ -693,10 +693,8 @@ class SEInference(_BaseInference):
 
         # Try training config
         try:
-            phase_key = cfg["dataset_phase"]          # e.g. "to48k"
-            phase_cfg = cfg["dataset"][phase_key]     # e.g. {"sample_rate_src": 48000, ...}
-            _cfg_src = int(phase_cfg["sample_rate_src"])
-            _cfg_in = int(phase_cfg["sample_rate_in"])
+            _cfg_src = int(cfg["dataset"]["sample_rate_src"])
+            _cfg_in = int(cfg["dataset"]["sample_rate_in"])
         except (KeyError, TypeError):
             _cfg_src = _FALLBACK_FS_SRC
             _cfg_in = _FALLBACK_FS_IN

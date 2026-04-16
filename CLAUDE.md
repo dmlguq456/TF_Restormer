@@ -43,7 +43,7 @@ TF_Restormer_release/
 │   │       ├── main.py             # Train/eval orchestrator (called by run.py)
 │   │       ├── main_infer.py       # Inference orchestrator (called by run.py)
 │   │       └── configs/
-│   │           ├── baseline.yaml   # Offline model (to48k pipeline)
+│   │           ├── baseline.yaml   # Offline model
 │   │           ├── streaming.yaml  # Online model (Mamba)
 │   │           └── testsets.yaml   # Test set path definitions
 │   │       └── modules/

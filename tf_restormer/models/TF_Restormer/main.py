@@ -19,7 +19,7 @@ def main(args):
     gpuid = tuple(map(int, config["engine"]["gpuid"].split(',')))
     device = torch.device(f'cuda:{gpuid[0]}')
 
-    dataloaders = get_dataloaders(args, config["dataset_phase"], config["dataset"], config["dataloader"])
+    dataloaders = get_dataloaders(args, config["dataset"], config["dataloader"])
     engine = Engine(args, config, model_e, dataloaders, gpuid, device)
     engine.run()
 

@@ -31,6 +31,7 @@ from .model import Model
 from .dataset import get_dataloaders
 from .engine_infer import EngineInfer
 from tf_restormer.utils import util_engine
+from tf_restormer.utils.util_engine import resolve_log_base
 from tf_restormer.utils.decorators import logger_wraps
 
 
@@ -64,11 +65,10 @@ def setup_inference(
     model = Model(**config["model"])
     model = model.to(device)
 
-    train_phase = config["train_phase"] + "_" + config["dataset_phase"]
-    log_base = f"log/log_{train_phase}_{config_name}"
-    chkp_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), log_base, "weights"
-    )
+    train_phase = config["train_phase"]
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    log_base = resolve_log_base(train_phase, config_name, base_dir)
+    chkp_path = os.path.join(base_dir, log_base, "weights")
     os.makedirs(chkp_path, exist_ok=True)
 
     # model-only load — no optimizer state needed for inference
@@ -314,7 +314,6 @@ def main_infer(args: argparse.Namespace) -> None:
             config["dataset_test"]["testset_key"] = key
             dataloaders = get_dataloaders(
                 args,
-                config["dataset_phase"],
                 config["dataset_test"],
                 config["dataloader"],
             )
@@ -367,11 +366,10 @@ def main_infer(args: argparse.Namespace) -> None:
     model_e = Model(**config["model"])
 
     # Load checkpoint once — reuse the same model across testset_keys
-    train_phase = config["train_phase"] + "_" + config["dataset_phase"]
-    log_base = f"log/log_{train_phase}_{config_name}"
-    chkp_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), log_base, "weights"
-    )
+    train_phase = config["train_phase"]
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    log_base = resolve_log_base(train_phase, config_name, base_dir)
+    chkp_path = os.path.join(base_dir, log_base, "weights")
     os.makedirs(chkp_path, exist_ok=True)
     util_engine.load_last_checkpoint_n_get_epoch_model_only(
         chkp_path, model_e, location=device
@@ -387,7 +385,6 @@ def main_infer(args: argparse.Namespace) -> None:
 
         dataloaders = get_dataloaders(
             args,
-            config["dataset_phase"],
             config["dataset_test"],
             config["dataloader"],
         )
