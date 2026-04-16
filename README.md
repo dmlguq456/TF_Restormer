@@ -14,18 +14,28 @@ TF-Restormer implements a Time-Frequency domain Restormer architecture for singl
 
 **Requirements**: Python 3.10+
 
-### pip (library usage)
+### pip
 
 ```bash
-pip install tf-restormer
+git clone https://github.com/shinuh/TF-Restormer.git
+cd TF-Restormer
 
-# With streaming model support (Mamba)
-pip install tf-restormer[mamba]
+# 1. Install PyTorch for your CUDA version first
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# 2. Install tf-restormer (editable)
+pip install -e .
+
+# With training dependencies
+pip install -e ".[train]"
+
+# With streaming model (Mamba)
+pip install -e ".[mamba]"
 ```
 
-### From source (development / training)
+### uv (recommended for development / training)
 
-Requires [uv](https://docs.astral.sh/uv/).
+[uv](https://docs.astral.sh/uv/) handles PyTorch CUDA index routing automatically.
 
 ```bash
 git clone https://github.com/shinuh/TF-Restormer.git
