@@ -608,11 +608,10 @@ class SEInference(_BaseInference):
         logger.info(f"Loading checkpoint: {ckpt_file}")
         try:
             ckpt = torch.load(str(ckpt_file), map_location=torch_device, weights_only=True)
-        except Exception:
-            logger.warning(
-                "weights_only=True failed; falling back to weights_only=False. "
-                "This may be unsafe for untrusted checkpoints."
-            )
+        except Exception as e:
+            if "weights_only" not in str(e).lower():
+                raise
+            logger.warning(f"weights_only load failed, retrying without: {e}")
             ckpt = torch.load(str(ckpt_file), map_location=torch_device, weights_only=False)
 
         # ── 5. Detect checkpoint format and extract state_dict ────────────

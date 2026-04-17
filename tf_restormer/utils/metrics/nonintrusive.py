@@ -357,7 +357,9 @@ def compute_nisqa(
         _utils_dir = Path(__file__).parent.parent  # .../tf_restormer/utils/
         weights_path = str(_utils_dir / "NISQA_models" / "nisqa_mos_only.tar")
 
-        checkpoint = torch.load(weights_path, map_location=dev)
+        # NISQA checkpoint contains argparse.Namespace in checkpoint['args'];
+        # weights_only=True will always fail for this third-party format.
+        checkpoint = torch.load(weights_path, map_location=dev, weights_only=False)
         args = checkpoint['args']
 
         model = NISQA(

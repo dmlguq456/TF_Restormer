@@ -49,7 +49,6 @@ def get_dataloaders(args: argparse.Namespace, dataset_config: dict, loader_confi
             num_workers = loader_config["num_workers"],
             drop_last = loader_config["drop_last"])
         dataloaders[partition] = dataloader
-            
     return dataloaders
 
 

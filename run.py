@@ -14,7 +14,7 @@ except ImportError as e:
 
 # Parse args
 parser = argparse.ArgumentParser(
-    description="Command to start PIT training, configured by .yaml files")
+    description="TF_Restormer CLI -- training, evaluation, and inference for speech enhancement")
 parser.add_argument(
     "--model",
     type=str,
