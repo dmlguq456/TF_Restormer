@@ -253,11 +253,9 @@ class Engine(object):
     @logger_wraps()
     def _train(self, _dataloader: DataLoader, epoch: int) -> tuple[dict, int]:
         """Run one training epoch."""
-        if self.subset_conf["train"]["subset"]:
-            sampler = util_engine.create_sampler(len(_dataloader.dataset), self.subset_conf["train"]["num_per_epoch"])
-            dataloader = DataLoader(dataset = _dataloader.dataset, collate_fn = _dataloader.collate_fn, sampler = sampler, **self.loader_config)
-        else:
-            dataloader = _dataloader
+        dataloader = util_engine.create_dataloader_with_sampler(
+            _dataloader, self.subset_conf["train"], self.loader_config
+        )
 
         self.model.train()
         tot_loss_time, tot_loss_se, tot_loss_rep, tot_loss_pesq, tot_loss_G_fm, tot_loss_G_adv, tot_loss_disc, n_batch = 0, 0, 0, 0, 0, 0, 0, 0
@@ -341,12 +339,12 @@ class Engine(object):
     @logger_wraps()
     def _validate(self, _dataloader: DataLoader, epoch: int) -> tuple[dict, int]:
         """Run one validation epoch."""
-        if self.subset_conf["valid"]["subset"]:
-            num_smmpl = self.subset_conf["valid"]["num_per_epoch"] if epoch > 0 else 100
-            sampler = util_engine.create_sampler(len(_dataloader.dataset), num_smmpl)
-            dataloader = DataLoader(dataset = _dataloader.dataset, collate_fn = _dataloader.collate_fn, sampler = sampler, **self.loader_config)
-        else:
-            dataloader = _dataloader
+        valid_conf = dict(self.subset_conf["valid"])  # shallow copy
+        if valid_conf["subset"] and epoch == 0:
+            valid_conf["num_per_epoch"] = 100  # epoch 0 sanity check
+        dataloader = util_engine.create_dataloader_with_sampler(
+            _dataloader, valid_conf, self.loader_config,
+        )
 
         self.model.eval()
         tot_loss_time, tot_loss_se, tot_loss_rep, tot_loss_pesq, tot_loss_G_fm, tot_loss_G_adv, tot_loss_disc, n_batch = 0, 0, 0, 0, 0, 0, 0, 0

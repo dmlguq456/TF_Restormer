@@ -6,6 +6,7 @@ import re
 import random
 import shutil
 import torch
+from torch.utils.data import DataLoader
 import numpy as np
 from loguru import logger
 
@@ -114,7 +115,7 @@ def load_last_checkpoint_n_get_epoch(checkpoint_dir: str, model: torch.nn.Module
 
     # Load the checkpoint into the model & optimizer
     logger.info(f"Loaded Pretrained model from {latest_checkpoint_file} .....")
-    checkpoint_dict = torch.load(latest_checkpoint_file, map_location=location)
+    checkpoint_dict = torch.load(latest_checkpoint_file, map_location=location, weights_only=True)
     model_state = checkpoint_dict['model_state_dict']
     if fix_compiled:
         model_state = _fix_compiled_state_dict(model_state)
@@ -156,17 +157,6 @@ def save_checkpoint_per_nth(nth: int, epoch: int, model: torch.nn.Module, optimi
                     os.path.join(checkpoint_path, f"epoch.{epoch:04}.pth"))
         
         # Log and save the checkpoint file using wandb
-
-def step_scheduler(scheduler: torch.optim.lr_scheduler.LRScheduler, **kwargs) -> None:
-    if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-        scheduler.step(kwargs.get('val_loss'))
-    elif isinstance(scheduler, torch.optim.lr_scheduler.StepLR):
-        scheduler.step()
-    elif isinstance(scheduler, torch.optim.lr_scheduler.CosineAnnealingLR):
-        scheduler.step()
-    # Add another schedulers
-    else:
-        raise ValueError(f"Unknown scheduler type: {type(scheduler)}")
 
 def print_parameters_count(model):
     total_parameters = 0
@@ -215,31 +205,34 @@ def model_params_mac_summary(model: torch.nn.Module, input_shape: tuple, metrics
             logger.info("Skipping torchinfo profiling (not installed).")
 
 
-    # MEASURE PERFORMANCE
-    # starter, ender = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
-    # repetitions = 500
-    # repetitions2 = 500
-    # timings = np.zeros((repetitions,1))
-    # torch.set_num_threads(1)
-    # with torch.no_grad():
-    #     for rep in range(repetitions+repetitions2):
-    #         if rep > repetitions:
-    #             starter.record()
-    #             _ = model(dummy_input)
-    #             ender.record()
-    #             # WAIT FOR GPU SYNC
-    #             torch.cuda.synchronize()
-    #             curr_time = starter.elapsed_time(ender)
-    #             timings[rep-repetitions2] = curr_time
-    # logger.info(f"Timing: {timings.mean()}")
-
-
 def create_sampler(dataset_size: int, num_samples: int) -> torch.utils.data.SubsetRandomSampler:
     indices = list(range(dataset_size))
     random.shuffle(indices)
     sampled_indices = indices[:num_samples]
     return torch.utils.data.SubsetRandomSampler(sampled_indices)
 
+
+def create_dataloader_with_sampler(
+    _dataloader: DataLoader,
+    subset_conf: dict,
+    loader_config: dict,
+) -> DataLoader:
+    """Return a new DataLoader with subset sampler if enabled, otherwise return the original.
+
+    Args:
+        _dataloader: The original DataLoader to wrap.
+        subset_conf: A dict with keys "subset" (bool) and "num_per_epoch" (int).
+        loader_config: DataLoader kwargs (batch_size, num_workers, pin_memory, drop_last).
+    """
+    if subset_conf["subset"]:
+        sampler = create_sampler(len(_dataloader.dataset), subset_conf["num_per_epoch"])
+        return DataLoader(
+            dataset=_dataloader.dataset,
+            collate_fn=_dataloader.collate_fn,
+            sampler=sampler,
+            **loader_config,
+        )
+    return _dataloader
 
 
 def p_law_compress(x, c=0.3, mode=None):
@@ -826,7 +819,7 @@ def load_last_checkpoint_n_get_epoch_model_only(
         chosen_path, _ = pairs[-1]
 
     logger.info(f"Loaded model weights from {chosen_path}")
-    checkpoint_dict = torch.load(chosen_path, map_location=location)
+    checkpoint_dict = torch.load(chosen_path, map_location=location, weights_only=True)
     model_state = checkpoint_dict["model_state_dict"]
     model_state = _fix_compiled_state_dict(model_state)
     model.load_state_dict(model_state, strict=False)

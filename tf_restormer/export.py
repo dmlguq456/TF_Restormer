@@ -219,11 +219,10 @@ def export_checkpoint(
     # Load checkpoint — prefer weights_only=True for safety
     try:
         ckpt = torch.load(str(src_ckpt), map_location="cpu", weights_only=True)
-    except Exception:
-        logger.warning(
-            "torch.load with weights_only=True failed; "
-            "falling back to weights_only=False"
-        )
+    except Exception as e:
+        if "weights_only" not in str(e).lower():
+            raise
+        logger.warning(f"weights_only load failed, retrying without: {e}")
         ckpt = torch.load(str(src_ckpt), map_location="cpu", weights_only=False)
 
     # Extract and clean model state dict

@@ -1,6 +1,5 @@
 import os
 import yaml
-import wandb
 import torch
 import inspect
 
@@ -49,6 +48,7 @@ def wandb_setup(yaml_dict):
         >>> config = parse_yaml("config.yaml")
         >>> run = wandb_setup(config)
     """
+    import wandb
     api_key=yaml_dict['wandb']['login']['key']
     if api_key == "":
         logger.warning("WandB login key is empty, aborting setup.")
@@ -84,6 +84,7 @@ def log_model_information_to_wandb(wandb_run, model, input_shape, root_path):
         >>> model = SomePyTorchModel()
         >>> log_model_architecture_to_wandb(wandb_run, model)
     """
+    import wandb
     if not wandb_run:
         logger.error("Invalid wandb_run provided.")
         return
