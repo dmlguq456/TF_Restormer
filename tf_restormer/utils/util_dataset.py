@@ -1,11 +1,9 @@
-import os
-import logging
 import inspect
-import numpy as np
-from scipy.signal import find_peaks
+import os
 
-# Call logger for monitoring
-logger = logging.getLogger("sys_log")
+import numpy as np
+from loguru import logger
+from scipy.signal import find_peaks
 
 def parse_scps(scp_path, db_root=None):
     """Parse SCP file and optionally join paths with DB_ROOT.

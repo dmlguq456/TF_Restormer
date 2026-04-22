@@ -1,17 +1,17 @@
-import torch
-import numpy as np
-
-from math import ceil
 from itertools import permutations
+from math import ceil
 from dataclasses import dataclass, field, fields
+
+import numpy as np
+import torch
 from loguru import logger
-from tf_restormer.utils.decorators import logger_wraps
-from tf_restormer.utils.util_stft import STFT, iSTFT
-from tf_restormer.utils.util_engine import p_law_compress
-from transformers import WhisperModel
-from transformers import Wav2Vec2Processor, Wav2Vec2Model
-from torchaudio.transforms import MelSpectrogram, Resample
 from torch_pesq import PesqLoss
+from torchaudio.transforms import MelSpectrogram, Resample
+from transformers import Wav2Vec2Model, Wav2Vec2Processor, WhisperModel
+
+from tf_restormer.utils.decorators import logger_wraps
+from tf_restormer.utils.util_engine import p_law_compress
+from tf_restormer.utils.util_stft import STFT, iSTFT
 
 
 # Utility functions

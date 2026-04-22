@@ -244,15 +244,14 @@ def p_law_compress(x, c=0.3, mode=None):
 
 
 class RandSpecAugment:
-    """
-    PyTorch 기반 SpecAugment (배치별 개별 마스크 지원)
+    """SpecAugment for batched spectrograms with per-example independent masks.
 
-    파라미터는 전부 [min, max] 범위로 지정
-      • time-mask 길이   : t_len
-      • freq-mask 길이   : f_len
-      • time-mask 개수  : t_num
-      • freq-mask 개수  : f_num
-    per_example=True  →  배치의 각 샘플에 독립 마스크
+    All range parameters are specified as [min, max] tuples:
+      - t_len: time-mask length range
+      - f_len: freq-mask length range
+      - t_num: number of time masks per sample
+      - f_num: number of freq masks per sample
+    When per_example=True, each sample in the batch gets an independent mask.
     """
     def __init__(self,
                  t_len: tuple[int, int] = (10, 20), f_len: tuple[int, int] = (40, 60),
@@ -263,14 +262,14 @@ class RandSpecAugment:
         self.per_example = per_example
         self.device = device
 
-    # -------- 겹치지 않는 1-D 구간 뽑기 (pure python) --------
+    # -------- Sample non-overlapping 1-D intervals (pure python) --------
     @staticmethod
     def _rand_ranges(L: int, n_rng, w_rng):
         n = random.randint(*n_rng)
         w_min, w_max = w_rng
         ranges = []
         for _ in range(n):
-            for _ in range(10):                     # 10회까지 재시도
+            for _ in range(10):                     # retry up to 10 times
                 w = random.randint(w_min, w_max)
                 if w >= L:
                     continue
@@ -280,7 +279,7 @@ class RandSpecAugment:
                     break
         return ranges
 
-    # -------- 단일 샘플 마스킹 --------
+    # -------- Mask a single sample --------
     def _mask_single(self, spec: torch.Tensor, mask_idx:torch.Tensor) -> torch.Tensor:
         """
         spec : (F, T) tensor   –  returns masked copy

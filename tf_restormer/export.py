@@ -47,6 +47,7 @@ import torch
 from loguru import logger
 
 from tf_restormer._config import _VARIANT_MAP, load_config, resolve_config
+from tf_restormer.inference import _strip_profiling_keys
 from tf_restormer.utils.util_engine import _find_latest_checkpoint, _fix_compiled_state_dict, resolve_log_base
 
 
@@ -232,20 +233,7 @@ def export_checkpoint(
     state_dict = _fix_compiled_state_dict(state_dict)
 
     # Strip ptflops / thop profiling keys (total_ops, total_params).
-    # These are 0-valued float64 tensors injected at profiling time;
-    # they are not part of the model and roughly halve the key count.
-    before = len(state_dict)
-    state_dict = {
-        k: v
-        for k, v in state_dict.items()
-        if "total_ops" not in k and "total_params" not in k
-    }
-    after = len(state_dict)
-    if before != after:
-        logger.info(
-            f"Stripped {before - after} profiling keys "
-            f"(total_ops / total_params): {before} -> {after} keys"
-        )
+    state_dict = _strip_profiling_keys(state_dict)
 
     # Resolve output directory
     if output_dir is None:
