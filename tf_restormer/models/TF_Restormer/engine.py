@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import argparse
 import os
-import torch
-import time
 import random
+import time
+
+import torch
 from loguru import logger
 from tqdm import tqdm
 import librosa
