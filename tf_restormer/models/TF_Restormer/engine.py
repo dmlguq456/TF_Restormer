@@ -9,9 +9,7 @@ import torch
 from loguru import logger
 from tqdm import tqdm
 import librosa
-import torchaudio.transforms as T
 from torchaudio.functional import resample as torch_resample
-from torchaudio.io import AudioEffector, CodecConfig
 from torch.utils.data import DataLoader
 from tf_restormer.utils import util_engine, util_stft
 from tf_restormer.utils.util_engine import resolve_log_base
@@ -62,8 +60,7 @@ class Engine(object):
         self.loss = MS_STFT_Gen_SC_Loss(**config["engine"][self.train_phase]["loss_enhance"], device=self.device)
         self.loss_fm = SSL_FM_Loss(**config["engine"][self.train_phase]["loss_rep"], device=self.device)
         self.loss_hf = HF_Loss(fs=16000, device=self.device)
-        self.resample = T.Resample(orig_freq=16000, new_freq=8000)
-        self.prob = config["engine"]["prob_effect"]
+        self.prob_downsample_8k = config["engine"].get("prob_downsample_8k", 0.0)
 
         # optim, scheduler, STFT configuration
         self.main_optimizer, self.warmup_scheduler, self.main_scheduler, optim_cls, sched_cls = \
@@ -134,67 +131,13 @@ class Engine(object):
         )
 
 
-    def audio_effecter(self, audio: torch.Tensor, sample_rate: int, batch_wise: bool = True) -> tuple[torch.Tensor, int]:
-        # codec effect
-
-        assert sample_rate == 16000, "Currently only 16kHz is supported for audio_effecter"
-
-        def mp3_case():
-            bit_rate = int(random.randint(4,16)*1000)
-            return AudioEffector(format='mp3', codec_config=CodecConfig(bit_rate=bit_rate))
-
-        def ogg_case():
-            encoder = random.choice(['vorbis', 'opus'])
-            return AudioEffector(format='ogg', encoder=encoder)
-
-
-        def apply_pipeline(x, sr):
-            if not effects:
-                return x
-
-            for eff in effects:
-                x = eff.apply(x, sr)
-            return x
-
-        def random_effect():
-            effects = []
-            if random.random() < self.prob['crystalizer']:
-                intensity=random.uniform(1, 4)
-                effects.append(AudioEffector(effect=f'crystalizer=i={intensity}'))
-            if random.random() < self.prob['flanger']:
-                depth = random.uniform(1, 5)
-                effects.append(AudioEffector(effect=f'flanger=depth={depth}'))
-            if random.random() < self.prob['crusher']:
-                bits = random.randint(1, 9)
-                effects.append(AudioEffector(effect=f'acrusher=bits={bits}'))
-            # codec is applied at the end
-            if random.random() < self.prob['codec']:
-                effects.append(random.choice([mp3_case, ogg_case])())
-            return effects
-
-        # 배치 순회
-        if batch_wise:
-            processed = []
-            for i in range(audio.shape[0]):
-                effects = random_effect()
-                sample = audio[i]
-                effected = apply_pipeline(sample.unsqueeze(-1), sample_rate)
-                effected = effected[:sample.shape[0], :]  # Ensure the output length matches the input
-                processed.append(effected.squeeze(-1))
-            audio = torch.stack(processed, dim=0)
-        else:
-            effects = random_effect()
-            audio = apply_pipeline(audio.permute(1,0), sample_rate)
-            audio = audio.permute(1,0)
-
-        if random.random() < self.prob['downsample_8k']:
-            sample_rate = 8000
-            audio = torch_resample(audio, orig_freq=16000, new_freq=8000, lowpass_filter_width=32, rolloff=0.98)
-        else:
-            sample_rate = 16000
-
-
-        return audio, sample_rate
+    def _downsample_8k(self, audio: torch.Tensor) -> tuple[torch.Tensor, int]:
+        """Randomly downsample to 8kHz for bandwidth-extension training."""
+        if random.random() < self.prob_downsample_8k:
+            audio = torch_resample(audio, orig_freq=16000, new_freq=8000,
+                                   lowpass_filter_width=32, rolloff=0.98)
+            return audio, 8000
+        return audio, 16000
 
     def target_downsample(self, target: torch.Tensor) -> tuple[torch.Tensor, int, int]:
         if random.random() < self.prob_downsample_src:
@@ -272,7 +215,7 @@ class Engine(object):
             target, fs_target, out_F = self.target_downsample(target)
             target_stft = self.stft[str(fs_target)](target.to(self.device), cplx=True) # B, F, T
 
-            noisy, fs_noisy = self.audio_effecter(noisy, 16000)
+            noisy, fs_noisy = self._downsample_8k(noisy)
             noisy_stft = self.stft[str(fs_noisy)](noisy.to(self.device), cplx=True)  # B, F, T
 
             # spec augment for masked modelling
@@ -364,7 +307,7 @@ class Engine(object):
                 target_stft = self.stft[str(fs_target)](target.to(self.device), cplx=True) # B, F, T
 
 
-                noisy, fs_noisy = self.audio_effecter(noisy, 16000)
+                noisy, fs_noisy = self._downsample_8k(noisy)
                 noisy_stft = self.stft[str(fs_noisy)](noisy.to(self.device), cplx=True)  # B, F, T
 
                 # spec augment for masked modelling
