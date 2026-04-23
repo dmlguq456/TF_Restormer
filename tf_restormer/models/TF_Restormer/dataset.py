@@ -1,7 +1,11 @@
 import argparse
+import functools
 import os
 import pickle
 import random
+import shutil
+import subprocess
+import tempfile
 from glob import glob
 from os.path import relpath
 
@@ -9,9 +13,10 @@ import colorednoise
 import librosa as audio_lib
 import numpy as np
 import scipy.signal as ss
+import soundfile as sf
 import torch
 from loguru import logger
-from pedalboard import LowpassFilter, HighpassFilter, Distortion, Clipping, MP3Compressor
+from pedalboard import Clipping
 from scipy.signal import filtfilt, firwin2
 from torch.utils.data import Dataset, DataLoader
 from torchaudio.functional import resample as torch_resample
@@ -52,6 +57,69 @@ def get_dataloaders(args: argparse.Namespace, dataset_config: dict, loader_confi
             drop_last = loader_config["drop_last"])
         dataloaders[partition] = dataloader
     return dataloaders
+
+
+@functools.lru_cache(maxsize=1)
+def _check_ffmpeg() -> bool:
+    """Return True if ffmpeg binary is available on PATH (result is cached)."""
+    return shutil.which("ffmpeg") is not None
+
+
+@functools.lru_cache(maxsize=1)
+def _check_ffmpeg_filters(filter_names: tuple[str, ...]) -> frozenset[str]:
+    """Return the subset of filter_names that ffmpeg supports (result is cached).
+
+    Args:
+        filter_names: Tuple of ffmpeg filter names to check (must be hashable for lru_cache).
+
+    Returns:
+        frozenset of available filter names from the requested set.
+    """
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-filters", "-v", "quiet"],
+            capture_output=True, text=True, timeout=10,
+        )
+        available = set()
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            # Filter list line format: " ... filtername ..."
+            # Lines that describe filters begin with a flag character (e.g. "A", "V", ".")
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] in filter_names:
+                available.add(parts[1])
+        return frozenset(available)
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        logger.warning("ffmpeg filter list parsing failed: %s", exc)
+        return frozenset()
+
+
+@functools.lru_cache(maxsize=1)
+def _check_ffmpeg_encoders(encoder_names: tuple[str, ...]) -> frozenset[str]:
+    """Return the subset of encoder_names that ffmpeg supports (result is cached).
+
+    Args:
+        encoder_names: Tuple of ffmpeg encoder names to check (must be hashable for lru_cache).
+
+    Returns:
+        frozenset of available encoder names from the requested set.
+    """
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-encoders", "-v", "quiet"],
+            capture_output=True, text=True, timeout=10,
+        )
+        available = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if len(line) > 7 and line[0] in "VASD" and line[1] == ".":
+                parts = line.split()
+                if len(parts) >= 2 and parts[1] != "=":
+                    available.append(parts[1])
+        return frozenset(n for n in encoder_names if n in available)
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        logger.warning("ffmpeg encoder list parsing failed: %s", exc)
+        return frozenset()
 
 
 @logger_wraps()
@@ -112,6 +180,19 @@ class SynthesisDataset(Dataset):
         # ------ Multi-speaker concat probability ------ #
         self.multi_spk_prob = synthesis_config.get('multi_spk_prob', 0.3)  # 30% chance to concat another speaker
 
+        # ------ Audio effects (ffmpeg-based digital distortion) ------ #
+        self.available_filters: frozenset[str] = frozenset()
+        self.available_encoders: frozenset[str] = frozenset()
+        self.prob_effect = synthesis_config.get('audio_effects', {})
+        self.has_ffmpeg = _check_ffmpeg()
+        if self.prob_effect and not self.has_ffmpeg:
+            logger.warning("ffmpeg not found. Digital distortion effects will be skipped.")
+        elif self.prob_effect:
+            needed_filters = ('crystalizer', 'flanger', 'acrusher')
+            self.available_filters = _check_ffmpeg_filters(needed_filters)
+            needed_encoders = ('libmp3lame', 'libvorbis', 'libopus')
+            self.available_encoders = _check_ffmpeg_encoders(needed_encoders)
+
 
     def occlusion_fir(self, 
                       audio,
@@ -154,16 +235,219 @@ class SynthesisDataset(Dataset):
         srcs = clipping(src, self.fs)
         return srcs
 
-    def _compress(self, src):
-        compress_level = np.random.randint(*self.MP3_compress_range)
-        compressor = MP3Compressor(compress_level)
-        srcs = compressor(src, self.fs)
-        return srcs
-
     def _resample(self, src):
         srcs_down = audio_lib.resample(src, orig_sr=self.fs, target_sr=self.fs_in)
         return srcs_down
-    
+
+    def _apply_ffmpeg_effect(self, audio: np.ndarray, sr: int, effect_str: str) -> np.ndarray:
+        """Apply an ffmpeg audio filter chain to a numpy float32 array.
+
+        Writes audio to a temp WAV, runs ffmpeg -af {effect_str}, reads back the result.
+        On any failure, logs a warning and returns the original audio unchanged.
+
+        Args:
+            audio: Input float32 numpy array (mono).
+            sr: Sample rate in Hz.
+            effect_str: ffmpeg -af filter string, e.g. 'crystalizer=i=2,flanger=depth=3'.
+
+        Returns:
+            Processed float32 numpy array, same length as input.
+        """
+        original_len = len(audio)
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                in_path = os.path.join(tmpdir, "input.wav")
+                out_path = os.path.join(tmpdir, "output.wav")
+                sf.write(in_path, audio, sr, subtype="FLOAT")
+                cmd = [
+                    "ffmpeg", "-y", "-loglevel", "error",
+                    "-i", in_path,
+                    "-af", effect_str,
+                    "-codec:a", "pcm_f32le",
+                    out_path,
+                ]
+                result = subprocess.run(cmd, capture_output=True, timeout=30)
+                if result.returncode != 0:
+                    logger.warning(
+                        "_apply_ffmpeg_effect: ffmpeg failed (effect=%s, returncode=%d). "
+                        "Returning original audio.\nstderr: %s",
+                        effect_str,
+                        result.returncode,
+                        result.stderr.decode(errors="replace")[:400],
+                    )
+                    return audio
+                processed, _ = sf.read(out_path, dtype="float32")
+                if processed.ndim == 2:
+                    processed = processed[:, 0]
+                if len(processed) >= original_len:
+                    processed = processed[:original_len]
+                else:
+                    processed = np.pad(processed, (0, original_len - len(processed)), mode="constant")
+                return processed.astype(np.float32)
+        except subprocess.TimeoutExpired:
+            logger.warning("_apply_ffmpeg_effect: ffmpeg timeout (effect=%s). Returning original.", effect_str)
+            return audio
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("_apply_ffmpeg_effect: exception (effect=%s): %s. Returning original.", effect_str, exc)
+            return audio
+
+    def _apply_ffmpeg_codec(self, audio: np.ndarray, sr: int) -> np.ndarray:
+        """Apply lossy codec encode-decode cycle (MP3 or OGG) via ffmpeg subprocess.
+
+        Random consumption sequence mirrors engine.py L172:
+          1st: random.choice(['mp3', 'ogg'])
+          2nd: random.randint(4, 16) * 1000  (if mp3)  or
+               random.choice(['vorbis', 'opus'])  (if ogg)
+
+        Both random calls are always made, even when the encoder is unavailable,
+        to preserve the global random state for reproducibility.
+
+        Args:
+            audio: Input float32 numpy array (mono).
+            sr: Sample rate in Hz.
+
+        Returns:
+            Codec-processed float32 numpy array, same length as input.
+        """
+        original_len = len(audio)
+        codec_type = random.choice(['mp3', 'ogg'])  # 1st random consumption
+        if codec_type == 'mp3':
+            bit_rate = random.randint(4, 16) * 1000  # 2nd random consumption
+            encoder = 'libmp3lame'
+            enc_ext = 'mp3'
+        else:
+            ogg_encoder = random.choice(['vorbis', 'opus'])  # 2nd random consumption
+            encoder = f'lib{ogg_encoder}'  # libvorbis or libopus
+            enc_ext = 'ogg'
+
+        # Skip actual encoding if encoder is unavailable
+        if encoder not in self.available_encoders:
+            return audio
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                in_path = os.path.join(tmpdir, "input.wav")
+                enc_path = os.path.join(tmpdir, f"encoded.{enc_ext}")
+                dec_path = os.path.join(tmpdir, "decoded.wav")
+                sf.write(in_path, audio, sr, subtype="FLOAT")
+
+                if codec_type == 'mp3':
+                    enc_cmd = [
+                        "ffmpeg", "-y", "-loglevel", "error", "-i", in_path,
+                        "-codec:a", "libmp3lame",
+                        "-b:a", str(bit_rate),
+                        enc_path,
+                    ]
+                elif encoder == 'libvorbis':
+                    enc_cmd = [
+                        "ffmpeg", "-y", "-loglevel", "error", "-i", in_path,
+                        "-codec:a", "libvorbis",
+                        enc_path,
+                    ]
+                else:  # opus
+                    enc_cmd = [
+                        "ffmpeg", "-y", "-loglevel", "error", "-i", in_path,
+                        "-codec:a", "libopus",
+                        enc_path,
+                    ]
+
+                dec_cmd = [
+                    "ffmpeg", "-y", "-loglevel", "error", "-i", enc_path,
+                    "-ar", str(sr),
+                    "-codec:a", "pcm_f32le",
+                    dec_path,
+                ]
+
+                enc_result = subprocess.run(enc_cmd, capture_output=True, timeout=30)
+                if enc_result.returncode != 0:
+                    logger.warning(
+                        "_apply_ffmpeg_codec: encode failed (codec=%s/%s, returncode=%d). "
+                        "Returning original.\nstderr: %s",
+                        codec_type, encoder,
+                        enc_result.returncode,
+                        enc_result.stderr.decode(errors="replace")[:400],
+                    )
+                    return audio
+
+                dec_result = subprocess.run(dec_cmd, capture_output=True, timeout=30)
+                if dec_result.returncode != 0:
+                    logger.warning(
+                        "_apply_ffmpeg_codec: decode failed (codec=%s/%s, returncode=%d). "
+                        "Returning original.\nstderr: %s",
+                        codec_type, encoder,
+                        dec_result.returncode,
+                        dec_result.stderr.decode(errors="replace")[:400],
+                    )
+                    return audio
+
+                decoded, _ = sf.read(dec_path, dtype="float32")
+                if decoded.ndim == 2:
+                    decoded = decoded[:, 0]
+                if len(decoded) >= original_len:
+                    decoded = decoded[:original_len]
+                else:
+                    decoded = np.pad(decoded, (0, original_len - len(decoded)), mode="constant")
+                return decoded.astype(np.float32)
+
+        except subprocess.TimeoutExpired:
+            logger.warning("_apply_ffmpeg_codec: ffmpeg timeout (codec=%s/%s). Returning original.", codec_type, encoder)
+            return audio
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("_apply_ffmpeg_codec: exception (codec=%s/%s): %s. Returning original.", codec_type, encoder, exc)
+            return audio
+
+    def audio_effecter(self, audio: np.ndarray, sr: int) -> np.ndarray:
+        """Apply probabilistic digital distortion effects (crystalizer, flanger, acrusher, codec).
+
+        Replicates the effect pipeline of engine.py audio_effecter() / random_effect()
+        using ffmpeg subprocess instead of torchaudio.io.AudioEffector.
+
+        Effect application order:
+          1. crystalizer (if available) — applied via ffmpeg -af
+          2. flanger    (if available) — applied via ffmpeg -af
+          3. acrusher   (if available) — applied via ffmpeg -af
+          4. codec      (mp3 or ogg)  — applied separately after filter chain
+
+        IMPORTANT: random.random() calls for effects 1-3 are always made regardless of
+        filter availability, to preserve the global random state.
+
+        Args:
+            audio: Input float32 numpy array (mono, 16kHz).
+            sr: Sample rate in Hz (expected 16000).
+
+        Returns:
+            Distortion-applied float32 numpy array, same length as input.
+        """
+        prob = self.prob_effect
+        audio = audio.astype(np.float32)
+
+        # Build filter chain for effects 1-3
+        # IMPORTANT: random parameter calls must ALWAYS execute (even if filter unavailable)
+        # to preserve the global random state sequence.
+        af_parts = []
+        if random.random() < prob.get('crystalizer', 0.0):
+            intensity = random.uniform(1, 4)  # always consume random
+            if 'crystalizer' in self.available_filters:
+                af_parts.append(f'crystalizer=i={intensity}')
+        if random.random() < prob.get('flanger', 0.0):
+            depth = random.uniform(1, 5)  # always consume random
+            if 'flanger' in self.available_filters:
+                af_parts.append(f'flanger=depth={depth}')
+        if random.random() < prob.get('crusher', 0.0):
+            bits = random.randint(1, 9)  # always consume random
+            if 'acrusher' in self.available_filters:
+                af_parts.append(f'acrusher=bits={bits}')
+
+        # Apply all filter-chain effects in a single ffmpeg call
+        if af_parts:
+            audio = self._apply_ffmpeg_effect(audio, sr, ','.join(af_parts))
+
+        # Apply codec separately (always last)
+        if random.random() < prob.get('codec', 0.0):
+            audio = self._apply_ffmpeg_codec(audio, sr)
+
+        return audio
+
 
     def _synthesis(self, clean, noise, rir):
         
@@ -210,6 +494,10 @@ class SynthesisDataset(Dataset):
             noisy_scalar = np.max(np.abs(noisy_distort)) / 0.99  # same as divide by 1
             noisy_distort = noisy_distort / noisy_scalar
             clean = clean / noisy_scalar
+
+        # Digital distortion effects (crystalizer, flanger, acrusher, codec) via ffmpeg
+        if self.prob_effect and self.has_ffmpeg:
+            noisy_distort = self.audio_effecter(noisy_distort, self.fs)
 
         return noisy_distort, clean
 	

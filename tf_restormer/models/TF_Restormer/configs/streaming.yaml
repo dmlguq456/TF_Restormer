@@ -65,6 +65,11 @@ config:
                 clipping_level_range: [-15, 0]
             level:
                 target_dB_FS: [-35, -15]
+            audio_effects:
+                codec: 0.3
+                crystalizer: 0.15
+                flanger: 0.05
+                crusher: 0.1
     dataset_test:
         testset_key: "VCTK_SR"
         tensorboard_logging: true
@@ -161,12 +166,7 @@ config:
             d_model: *var_model_channels_2nd
     # ============================== Training ============================== #
     engine:
-        prob_effect:
-            downsample_8k: 0.25
-            codec: 0.3
-            crystalizer: 0.15
-            flanger: 0.05
-            crusher: 0.1
+        prob_downsample_8k: 0.25
         subset:
             train:
                 subset: true
