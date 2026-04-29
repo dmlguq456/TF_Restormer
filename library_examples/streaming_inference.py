@@ -29,7 +29,7 @@ Usage::
 
 Key streaming API pattern::
 
-    session = model.create_session(streaming=True)
+    session = model.create_session(fs_in=input_sample_rate, streaming=True)
     for chunk in audio_chunks:
         results = session.feed_waveform(chunk)   # consume immediately
         for r in results:
@@ -155,7 +155,7 @@ def main() -> None:
     # Each feed_waveform() call returns one dict per completed internal
     # chunk — consume these results immediately, do NOT discard them.
     # ------------------------------------------------------------------
-    session = model.create_session(streaming=True)
+    session = model.create_session(fs_in=file_sr, streaming=True)
 
     chunk_size = args.chunk_samples
     n_total = waveform.shape[0]
@@ -169,7 +169,7 @@ def main() -> None:
 
         # feed_waveform() returns a list — one dict per completed internal chunk.
         # In streaming mode, consume these results immediately (not via finalize()).
-        results = session.feed_waveform(chunk, fs_in=file_sr)
+        results = session.feed_waveform(chunk)
         for r in results:
             enhanced_parts.append(r["waveform"].squeeze(0).cpu())
 

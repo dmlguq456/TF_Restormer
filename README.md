@@ -69,10 +69,10 @@ result = model.process_file("noisy_16k.wav", output_path="restored.wav")
 # result["waveform"]    -> (1, L) tensor at 48 kHz
 # result["sample_rate"] -> 48000
 
-# Or restore a waveform tensor directly (16 kHz input → 48 kHz output)
+# Or restore a waveform tensor directly (fs_in is required — native input rate)
 import torch
 waveform = torch.randn(1, 16000)  # (1, L) at 16 kHz
-result = model.process_waveform(waveform)
+result = model.process_waveform(waveform, fs_in=16000)
 ```
 
 For STFT-domain I/O, chunk-by-chunk streaming, or session-based processing, see the [Library API](#library-api) section below.
@@ -142,7 +142,7 @@ Single-call APIs that consume the whole input at once. The three `process_*` met
 #### Level 1: File I/O (`process_file`)
 
 ```python
-# Loads audio at native sample rate, resamples to model input rate, restores, saves result
+# Loads audio at native sample rate (fs_in auto-detected from file), restores, saves result
 result = model.process_file("noisy_16k.wav", output_path="restored.wav")
 # result["waveform"]    -> (1, L) tensor at 48 kHz
 # result["sample_rate"] -> 48000
@@ -156,21 +156,23 @@ result = model.process_file("noisy_16k.wav", output_path="restored.wav")
 import torch
 waveform = torch.randn(1, 16000)  # (1, L) at 16 kHz
 
+# fs_in is required — native input sample rate
 # Auto mode: single-pass for short audio, chunked overlap-add for long audio
-result = model.process_waveform(waveform)
+result = model.process_waveform(waveform, fs_in=16000)
 # result["waveform"] -> (1, L_out) at 48 kHz
 
 # Force single-pass or chunked mode
-result = model.process_waveform(waveform, mode="single_pass")
-result = model.process_waveform(waveform, mode="css")
+result = model.process_waveform(waveform, fs_in=16000, mode="single_pass")
+result = model.process_waveform(waveform, fs_in=16000, mode="css")
 ```
 
 #### Level 3: Full STFT (`process_stft`)
 
 ```python
 # STFT in, STFT + waveform out — for pipelines that manage STFT themselves
+# fs_in is required — must match the rate the STFT was computed at
 stft_input = model.get_stft(16000)(waveform, cplx=True)  # (1, F, T) complex
-result = model.process_stft(stft_input)
+result = model.process_stft(stft_input, fs_in=16000)
 # result["stft_out"] -> (1, F_out, T) complex tensor
 # result["waveform"] -> (1, L_out) float tensor
 
@@ -201,7 +203,8 @@ result = session.finalize()
 Feed raw PCM samples and receive enhanced chunks immediately.
 
 ```python
-session = model.create_session(streaming=True)
+# fs_in is required in create_session; feed_waveform does not take fs_in
+session = model.create_session(fs_in=16000, streaming=True)
 
 while stream_in.is_active():
     waveform = stream_in.read(read_size)

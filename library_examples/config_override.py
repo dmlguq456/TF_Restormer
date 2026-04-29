@@ -6,7 +6,7 @@ SEInference.from_pretrained():
   Pattern 1 — Config name string (package-bundled YAML)
   Pattern 2 — Absolute path to a custom YAML file
   Pattern 3 — Dict (full YAML dict or inner config dict) with modifications
-  Pattern 4 — Override sample rates via fs_in / fs_src kwargs
+  Pattern 4 — Override output sample rate via fs_src kwarg
   Pattern 5 — Hugging Face Hub loading
 
 Run this file to see what each pattern prints; no real inference is
@@ -137,25 +137,25 @@ def pattern3_dict_override() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pattern 4 — Override sample rates via kwargs
+# Pattern 4 — Override output sample rate via fs_src kwarg
 # ---------------------------------------------------------------------------
 def pattern4_sample_rate_override() -> None:
-    """Override input/output sample rates without touching the config dict.
+    """Override the output sample rate without touching the config dict.
 
-    fs_in  : sample rate the model expects at its input (e.g. 16000 Hz).
     fs_src : sample rate the model produces at its output (e.g. 48000 Hz).
+             Overrides the value read from the training config.
 
-    These override the values read from the training config.  Use this when
-    you want to process audio at a different rate than the model was trained
-    at — process_file() will resample automatically.
+    Note: fs_in is no longer a from_pretrained() argument.  The input
+    sample rate is supplied per-call (process_waveform, create_session, etc.)
+    and the engine uses nearest-key STFT lookup, so no manual resampling is
+    required.
     """
-    print("=== Pattern 4: sample rate override via kwargs ===")
+    print("=== Pattern 4: output sample rate override via fs_src kwarg ===")
     print(
         "model = SEInference.from_pretrained(\n"
         "    config='baseline.yaml',\n"
         "    checkpoint_path='path/to/checkpoints/baseline/',\n"
         "    device='cuda',\n"
-        "    fs_in=8000,    # override: model input expected at 8 kHz\n"
         "    fs_src=16000,  # override: model produces 16 kHz output\n"
         ")"
     )
@@ -167,7 +167,6 @@ def pattern4_sample_rate_override() -> None:
     #       config="baseline.yaml",
     #       checkpoint_path="path/to/checkpoints/baseline/",
     #       device="cuda",
-    #       fs_in=8000,
     #       fs_src=16000,
     #   )
     print()

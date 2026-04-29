@@ -10,25 +10,27 @@ Waveform-level API::
         device="cuda",
     )
 
-    # Process a waveform tensor
+    # Process a waveform tensor (fs_in is required — native input sample rate)
     import torch
     waveform = torch.randn(1, 16000)  # (1, L) at 16 kHz input
-    result = model.process_waveform(waveform)
+    result = model.process_waveform(waveform, fs_in=16000)
     # result["waveform"] -> (1, L_out) at 48 kHz output
 
-    # Process a wav file and optionally save
+    # Process a wav file and optionally save (fs_in is auto-detected from file)
     result = model.process_file("noisy.wav", output_path="enhanced.wav")
 
 STFT-level API (for advanced users managing STFT themselves)::
 
     # Input: complex STFT tensor (1, F, T) or stacked (1, F, T, 2)
-    result = model.process_stft(stft_complex)
+    # fs_in is required — must match the rate the STFT was computed at
+    result = model.process_stft(stft_complex, fs_in=16000)
     # result["stft_out"] -> (1, F, T) complex tensor
     # result["waveform"] -> (1, L) float tensor
 
 Streaming / session API::
 
-    session = model.create_session(streaming=True)
+    # fs_in is required in create_session; feed_waveform does not take fs_in
+    session = model.create_session(fs_in=16000, streaming=True)
     for chunk in microphone_stream():
         results = session.feed_waveform(chunk)
         for r in results:
@@ -201,7 +203,6 @@ class _BaseInference:
         checkpoint_path: str | Path | None = None,
         device: str | torch.device = "cuda",
         fs_src: int | None = None,
-        fs_in: int | None = None,
         **kwargs,
     ) -> "_BaseInference":
         """Create an inference instance from a config and checkpoint.
@@ -219,8 +220,6 @@ class _BaseInference:
                 the value read from the training config.  Most users should
                 leave this as ``None``; the correct value (e.g. 48000) is
                 read from ``config["dataset"]``.
-            fs_in:  Input sample rate the model expects (Hz).  Overrides the
-                training config value (e.g. 16000).
             **kwargs: Reserved for future use.
 
         Returns:
@@ -233,7 +232,7 @@ class _BaseInference:
         logger.disable("tf_restormer")
         try:
             return cls._from_pretrained_impl(
-                config, checkpoint_path, device, fs_src, fs_in, **kwargs
+                config, checkpoint_path, device, fs_src, **kwargs
             )
         finally:
             logger.enable("tf_restormer")
@@ -273,14 +272,14 @@ class InferenceSession:
     def __init__(
         self,
         parent: "SEInference",
+        fs_in: int,
         streaming: bool = False,
-        fs_in: int | None = None,
         fs_out: int | None = None,
         css_config: dict | None = None,
     ) -> None:
         self._parent = parent
         self._streaming = streaming
-        self._fs_in = fs_in if fs_in is not None else parent._fs_in
+        self._fs_in = fs_in
         self._fs_out = fs_out if fs_out is not None else parent._fs_src
 
         engine = parent.engine
@@ -307,15 +306,23 @@ class InferenceSession:
         # ---- Frame dimensions from STFT object ----
         self._frame_len: int = self._stft.N
         self._frame_hop: int = self._stft.stride
-        assert self._stft.N == int(engine.frame_length * self._fs_in / 1000), (
-            f"STFT.N ({self._stft.N}) != frame_length*fs_in/1000 "
-            f"({int(engine.frame_length * self._fs_in / 1000)})"
+        # Use the actual rate of the resolved STFT key (not raw fs_in) for the
+        # assert — fs_in may differ from the STFT key when nearest-key fallback
+        # is triggered (e.g. fs_in=44100 -> stft_key="48000", stft_fs=48000).
+        stft_fs = int(stft_key)
+        self._stft_fs = stft_fs
+        assert self._stft.N == int(engine.frame_length * stft_fs / 1000), (
+            f"STFT.N ({self._stft.N}) != frame_length*stft_fs/1000 "
+            f"({int(engine.frame_length * stft_fs / 1000)})"
         )
 
         # ---- STFT-frame chunk parameters ----
+        # Use stft_fs (resolved STFT rate) for frame arithmetic, because the
+        # STFT hop is defined in samples at stft_fs. self._fs_in is retained
+        # only for _out_ratio (waveform-level length scaling).
         frame_hop = self._frame_hop
-        total_frames = int(chunk_sec * self._fs_in / frame_hop)
-        overlap_frames = int(overlap_sec * self._fs_in / frame_hop)
+        total_frames = int(chunk_sec * stft_fs / frame_hop)
+        overlap_frames = int(overlap_sec * stft_fs / frame_hop)
         self._N_h: int = overlap_frames
         self._N_c: int = max(1, total_frames - 2 * overlap_frames)
         self._N_f: int = overlap_frames
@@ -350,15 +357,12 @@ class InferenceSession:
     def feed_waveform(
         self,
         waveform: torch.Tensor,
-        fs_in: int | None = None,
         fs_out: int | None = None,
     ) -> list[dict]:
         """Buffer raw waveform samples and process complete chunks.
 
         Args:
             waveform: PCM float tensor of shape ``(L,)`` or ``(1, L)``.
-            fs_in:    Sample rate of *waveform*.  Defaults to the session's
-                      ``fs_in`` (set at :meth:`create_session` time).
             fs_out:   Desired output sample rate.  Defaults to the session's
                       ``fs_out``.
 
@@ -408,7 +412,6 @@ class InferenceSession:
     def flush(
         self,
         remaining_waveform: torch.Tensor | None = None,
-        fs_in: int | None = None,
         fs_out: int | None = None,
     ) -> tuple[list[dict], dict | None]:
         """Process remaining buffered samples and end the stream.
@@ -420,7 +423,6 @@ class InferenceSession:
         Args:
             remaining_waveform: Optional final samples to append before
                 flushing.  Shape ``(L,)`` or ``(1, L)``.
-            fs_in:  Sample rate of *remaining_waveform*.
             fs_out: Desired output sample rate.
 
         Returns:
@@ -430,7 +432,7 @@ class InferenceSession:
         """
         drained = []
         if remaining_waveform is not None:
-            drained = self.feed_waveform(remaining_waveform, fs_in=fs_in, fs_out=fs_out)
+            drained = self.feed_waveform(remaining_waveform, fs_out=fs_out)
 
         _fs_out = fs_out if fs_out is not None else self._fs_out
 
@@ -578,7 +580,6 @@ class SEInference(_BaseInference):
         checkpoint_path,
         device,
         fs_src,
-        fs_in,
         **kwargs,
     ) -> "SEInference":
         # ── 0. HF Hub detection ──────────────────────────────────────────
@@ -615,8 +616,8 @@ class SEInference(_BaseInference):
                 f"config must be a file path (str/Path) or a dict, got {type(config)}"
             )
 
-        # ── 2. Resolve fs_src / fs_in from training config ───────────────
-        _fs_src, _fs_in = cls._resolve_sample_rates(cfg, fs_src, fs_in)
+        # ── 2. Resolve fs_src from training config ───────────────────────
+        _fs_src = cls._resolve_sample_rates(cfg, fs_src)
 
         # ── 3. Resolve checkpoint path ────────────────────────────────────
         torch_device = torch.device(device)
@@ -703,7 +704,6 @@ class SEInference(_BaseInference):
             model=model,
             device=torch_device,
             fs_src=_fs_src,
-            fs_in=_fs_in,
         )
 
         # ── 8. Construct instance ─────────────────────────────────────────
@@ -711,7 +711,6 @@ class SEInference(_BaseInference):
         instance.engine = engine
         instance._config = cfg
         instance._fs_src = _fs_src
-        instance._fs_in = _fs_in
         return instance
 
     # ------------------------------------------------------------------
@@ -722,52 +721,45 @@ class SEInference(_BaseInference):
     def _resolve_sample_rates(
         cfg: dict,
         fs_src: int | None,
-        fs_in: int | None,
-    ) -> tuple[int, int]:
-        """Resolve fs_src and fs_in with three-tier priority.
+    ) -> int:
+        """Resolve fs_src with three-tier priority.
 
         Priority:
-        1. Explicit kwargs (fs_src / fs_in) — highest priority.
-        2. Training config: ``config["dataset"]``.
-        3. Hardcoded fallback: fs_src=48000, fs_in=16000.
+        1. Explicit kwarg (fs_src) — highest priority.
+        2. Training config: ``config["dataset"]["sample_rate_src"]``.
+        3. Hardcoded fallback: fs_src=48000.
 
         Args:
             cfg:    Inner config dict (``yaml_dict["config"]``).
             fs_src: Explicit override for output sample rate, or ``None``.
-            fs_in:  Explicit override for input sample rate, or ``None``.
 
         Returns:
-            ``(fs_src, fs_in)`` as resolved integers.
+            Resolved ``fs_src`` as an integer.
         """
         _FALLBACK_FS_SRC = 48000
-        _FALLBACK_FS_IN = 16000
 
-        if fs_src is not None and fs_in is not None:
-            return int(fs_src), int(fs_in)
+        if fs_src is not None:
+            return int(fs_src)
 
         # Try training config
         try:
             _cfg_src = int(cfg["dataset"]["sample_rate_src"])
-            _cfg_in = int(cfg["dataset"]["sample_rate_in"])
         except (KeyError, TypeError):
             _cfg_src = _FALLBACK_FS_SRC
-            _cfg_in = _FALLBACK_FS_IN
             logger.info(
-                f"Using hardcoded fallback sample rates "
-                f"(fs_src={_FALLBACK_FS_SRC}, fs_in={_FALLBACK_FS_IN}). "
-                f"Override with explicit kwargs if processing audio at different rates."
+                f"Using hardcoded fallback sample rate "
+                f"(fs_src={_FALLBACK_FS_SRC}). "
+                f"Override with explicit kwarg if needed."
             )
         else:
-            if _cfg_src != _FALLBACK_FS_SRC or _cfg_in != _FALLBACK_FS_IN:
+            if _cfg_src != _FALLBACK_FS_SRC:
                 logger.info(
-                    f"Using training config sample rates "
-                    f"(fs_src={_cfg_src}, fs_in={_cfg_in}). "
-                    f"Override with explicit kwargs if processing audio at different rates."
+                    f"Using training config sample rate "
+                    f"(fs_src={_cfg_src}). "
+                    f"Override with explicit kwarg if needed."
                 )
 
-        resolved_src = int(fs_src) if fs_src is not None else _cfg_src
-        resolved_in = int(fs_in) if fs_in is not None else _cfg_in
-        return resolved_src, resolved_in
+        return _cfg_src
 
     # ------------------------------------------------------------------
     # Properties
@@ -836,7 +828,7 @@ class SEInference(_BaseInference):
     def process_waveform(
         self,
         waveform: torch.Tensor,
-        fs_in: int | None = None,
+        fs_in: int,
         fs_out: int | None = None,
         **kwargs,
     ) -> dict:
@@ -848,8 +840,7 @@ class SEInference(_BaseInference):
 
         Args:
             waveform: Input waveform, shape ``(L,)`` or ``(1, L)``.
-            fs_in:    Input sample rate (Hz).  Defaults to ``self._fs_in``
-                      (read from training config, typically 16000).
+            fs_in:    Input sample rate of the provided waveform (Hz). Required.
             fs_out:   Output sample rate (Hz).  Defaults to ``self._fs_src``
                       (training config output rate, typically 48000).
             **kwargs: Forwarded to :meth:`EngineInfer.infer_session`
@@ -869,13 +860,13 @@ class SEInference(_BaseInference):
         self,
         input_path: str | Path,
         output_path: str | Path | None = None,
-        fs_in: int | None = None,
         fs_out: int | None = None,
     ) -> dict:
         """Enhance an audio file on disk.
 
         Reads the file, calls :meth:`process_waveform`, and optionally writes
-        the enhanced output.
+        the enhanced output.  The input sample rate is auto-detected from the
+        file; no pre-resampling is performed.
 
         Args:
             input_path:  Path to the input audio file (any format supported by
@@ -883,10 +874,6 @@ class SEInference(_BaseInference):
             output_path: If provided, write the enhanced waveform to this path.
                          The output sample rate is ``fs_out`` (default:
                          ``self._fs_src``).
-            fs_in:       Override the input sample rate detected from the file.
-                         When ``None``, the file's actual sample rate is used and
-                         resampling is performed if it differs from
-                         ``self._fs_in``.
             fs_out:      Desired output sample rate.  Defaults to
                          ``self._fs_src``.
 
@@ -912,26 +899,7 @@ class SEInference(_BaseInference):
 
         wav = torch.from_numpy(wav_np)  # (L,) float32
 
-        # Resolve actual input rate
-        _fs_in = fs_in if fs_in is not None else orig_fs
-
-        # Resample to model's expected input rate if needed
-        if _fs_in != self._fs_in:
-            try:
-                import torchaudio.functional as F_audio
-            except ImportError:
-                raise ImportError(
-                    "torchaudio is required for sample rate conversion. "
-                    "Install with: pip install torchaudio"
-                ) from None
-            logger.info(
-                f"Resampling input from {_fs_in} Hz -> {self._fs_in} Hz."
-            )
-            wav = F_audio.resample(wav, _fs_in, self._fs_in,
-                                  lowpass_filter_width=64, rolloff=0.98)
-            _fs_in = self._fs_in
-
-        result = self.process_waveform(wav, fs_in=_fs_in, fs_out=fs_out)
+        result = self.process_waveform(wav, fs_in=orig_fs, fs_out=fs_out)
 
         out_fs = fs_out if fs_out is not None else self._fs_src
         if output_path is not None:
@@ -948,7 +916,7 @@ class SEInference(_BaseInference):
     def process_stft(
         self,
         stft_input: torch.Tensor,
-        fs_in: int | None = None,
+        fs_in: int,
         fs_out: int | None = None,
     ) -> dict:
         """Run the model directly on a complex STFT input.
@@ -961,7 +929,7 @@ class SEInference(_BaseInference):
             stft_input: Complex STFT tensor ``(1, F, T)`` or ``(F, T)``, or
                         stacked real/imag tensor ``(1, F, T, 2)``.
             fs_in:      Input sample rate used to select the correct STFT
-                        key.  Defaults to ``self._fs_in``.
+                        key (Hz). Required.
             fs_out:     Output sample rate used to select iSTFT and compute
                         ``out_F``.  Defaults to ``self._fs_src``.
 
@@ -970,7 +938,6 @@ class SEInference(_BaseInference):
             - ``"stft_out"`` → ``(1, F_out, T)`` complex64 tensor.
             - ``"waveform"`` → ``(1, L_out)`` float32 tensor.
         """
-        _fs_in = fs_in if fs_in is not None else self._fs_in
         _fs_out = fs_out if fs_out is not None else self._fs_src
 
         # ── Normalize input shape ────────────────────────────────────────
@@ -1009,21 +976,20 @@ class SEInference(_BaseInference):
 
     def create_session(
         self,
-        streaming: bool = False,
-        fs_in: int | None = None,
+        fs_in: int,
         fs_out: int | None = None,
+        streaming: bool = False,
         css_config: dict | None = None,
     ) -> InferenceSession:
         """Create a stateful :class:`InferenceSession` for chunk-by-chunk processing.
 
         Args:
+            fs_in:     Input sample rate for the session (Hz). Required.
+            fs_out:    Output sample rate for the session.  Defaults to
+                       ``self._fs_src``.
             streaming: If ``True``, each :meth:`InferenceSession.feed_waveform`
                        call returns enhanced chunks immediately.  If ``False``
                        (batch mode), results accumulate for :meth:`InferenceSession.finalize`.
-            fs_in:     Input sample rate for the session.  Defaults to
-                       ``self._fs_in``.
-            fs_out:    Output sample rate for the session.  Defaults to
-                       ``self._fs_src``.
             css_config: Optional dict to override ``chunk_sec`` / ``overlap_sec``
                         on the underlying :class:`EngineInfer`.  Applied before
                         the session reads those values.
@@ -1033,8 +999,8 @@ class SEInference(_BaseInference):
         """
         return InferenceSession(
             parent=self,
-            streaming=streaming,
             fs_in=fs_in,
+            streaming=streaming,
             fs_out=fs_out,
             css_config=css_config,
         )

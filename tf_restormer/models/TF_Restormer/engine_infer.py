@@ -31,7 +31,6 @@ class EngineInfer:
                  caller's responsibility — see main_infer.py).
         device:  torch.device to run on.
         fs_src:  Output sample rate produced by the model (Hz).
-        fs_in:   Input sample rate that the model expects (Hz).
     """
 
     def __init__(
@@ -40,13 +39,11 @@ class EngineInfer:
         model: torch.nn.Module,
         device: torch.device,
         fs_src: int = 16000,
-        fs_in: int = 16000,
     ) -> None:
         self.config = config
         self.model = model.to(device)
         self.device = device
         self.fs_src = fs_src
-        self.fs_in = fs_in
 
         self.model.eval()
 
@@ -93,7 +90,7 @@ class EngineInfer:
     def infer_chunk(
         self,
         waveform_chunk: torch.Tensor,
-        fs_in: int | None = None,
+        fs_in: int,
         fs_out: int | None = None,
     ) -> dict:
         """Process a single waveform chunk through the model.
@@ -107,7 +104,6 @@ class EngineInfer:
                             Any device / dtype is accepted — moved and cast
                             automatically.
             fs_in:          Sample rate of the input waveform (Hz).
-                            Falls back to ``self.fs_in`` when None.
             fs_out:         Desired output sample rate (Hz).  When None
                             ``self.fs_src`` is used and ``self.out_F`` is
                             reused directly (no recomputation).
@@ -121,12 +117,11 @@ class EngineInfer:
         if x.dim() == 1:
             x = x.unsqueeze(0)  # (1, L)
 
-        # ---- resolve sample rates ----
-        _fs_in = fs_in if fs_in is not None else self.fs_in
+        # ---- resolve output sample rate ----
         _fs_out = fs_out if fs_out is not None else self.fs_src
 
         # ---- STFT key lookup (nearest fallback for non-standard rates) ----
-        stft_key = self._resolve_stft_key(_fs_in)
+        stft_key = self._resolve_stft_key(fs_in)
         istft_key = self._resolve_stft_key(_fs_out)
 
         # ---- STFT -> infer_stft_chunk -> iSTFT ----
@@ -179,7 +174,7 @@ class EngineInfer:
     def infer_session(
         self,
         waveform: torch.Tensor,
-        fs_in: int | None = None,
+        fs_in: int,
         fs_out: int | None = None,
         mode: str = "auto",
         css_config: dict | None = None,
@@ -189,7 +184,7 @@ class EngineInfer:
 
         Args:
             waveform:       1-D or 2-D (1, L) waveform tensor.
-            fs_in:          Input sample rate (Hz).  Defaults to ``self.fs_in``.
+            fs_in:          Input sample rate (Hz).
             fs_out:         Output sample rate (Hz).  Defaults to ``self.fs_src``.
             mode:           ``"auto"``  — choose based on waveform length;
                             ``"css"``  — always use chunked overlap-add;
@@ -201,12 +196,11 @@ class EngineInfer:
         Returns:
             dict with key ``"waveform"`` → enhanced tensor, shape ``(1, L)``.
         """
-        _fs_in = fs_in if fs_in is not None else self.fs_in
         _fs_out = fs_out if fs_out is not None else self.fs_src
 
         wav = self._preprocess_waveform(waveform)
 
-        threshold_samples = int(self.chunk_sec * _fs_in)
+        threshold_samples = int(self.chunk_sec * fs_in)
 
         if mode == "auto":
             use_css = wav.shape[0] > threshold_samples
@@ -220,13 +214,13 @@ class EngineInfer:
         if use_css:
             enhanced = self._css_session(
                 wav,
-                fs_in=_fs_in,
+                fs_in=fs_in,
                 fs_out=_fs_out,
                 css_config=css_config,
                 show_progress=show_progress,
             )
         else:
-            result = self._single_pass_session(wav, fs_in=_fs_in, fs_out=_fs_out)
+            result = self._single_pass_session(wav, fs_in=fs_in, fs_out=_fs_out)
             enhanced = result["waveform"]  # (1, L)
 
         return {"waveform": enhanced}
@@ -412,14 +406,14 @@ class EngineInfer:
     def _single_pass_session(
         self,
         waveform: torch.Tensor,
-        fs_in: int | None = None,
+        fs_in: int,
         fs_out: int | None = None,
     ) -> dict:
         """Single forward pass for short audio.
 
         Args:
             waveform: 1-D tensor ``(L,)``.
-            fs_in:    Input sample rate (Hz).  Defaults to ``self.fs_in``.
+            fs_in:    Input sample rate (Hz).
             fs_out:   Output sample rate (Hz).  Defaults to ``self.fs_src``.
 
         Returns:
