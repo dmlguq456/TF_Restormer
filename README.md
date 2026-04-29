@@ -75,6 +75,8 @@ waveform = torch.randn(1, 16000)  # (1, L) at 16 kHz
 result = model.process_waveform(waveform)
 ```
 
+For STFT-domain I/O or chunked processing, see the [Library API](#library-api) section below.
+
 ### CLI
 
 ```bash
@@ -107,6 +109,91 @@ See [`library_examples/`](library_examples/) for complete runnable scripts:
 | `streaming_inference.py` | Chunk-by-chunk streaming inference |
 | `config_override.py` | Override config values; HF Hub loading |
 | `eval_metrics.py` | Compute PESQ/STOI/DNSMOS/NISQA standalone |
+
+## Library API
+
+For programmatic inference — load a model and process audio in Python code. Supports local checkpoints and Hugging Face Hub downloads.
+
+### Model Loading
+
+```python
+from tf_restormer import SEInference
+
+# Load from local checkpoint
+model = SEInference.from_pretrained(
+    config="baseline.yaml",
+    checkpoint_path="path/to/checkpoint/",
+    device="cuda",
+)
+
+# Or load from Hugging Face Hub (requires: pip install -e ".[hub]")
+model = SEInference.from_pretrained(
+    checkpoint_path="shinuh/tf-restormer-baseline",
+    device="cuda",
+)
+```
+
+### Batch Processing
+
+Single-call APIs that consume the whole input at once. The three `process_*` methods are arranged from **highest abstraction (file I/O)** to **lowest (STFT domain)**, so you can pick the level that matches your pipeline.
+
+#### Level 1: File I/O (`process_file`)
+
+```python
+# Loads audio, resamples to 16 kHz if needed, runs inference, saves result
+result = model.process_file("noisy.wav", output_path="restored.wav")
+# result["waveform"]    -> (1, L) tensor at 48 kHz
+# result["sample_rate"] -> 48000
+```
+
+#### Level 2: Waveform Tensor (`process_waveform`)
+
+```python
+import torch
+waveform = torch.randn(1, 16000)  # (1, L) at 16 kHz
+
+# Auto mode: single-pass for short audio, chunked overlap-add for long audio
+result = model.process_waveform(waveform)
+# result["waveform"] -> (1, L_out) at 48 kHz
+
+# Force single-pass or chunked mode
+result = model.process_waveform(waveform, mode="single_pass")
+result = model.process_waveform(waveform, mode="css")
+```
+
+#### Level 3: Full STFT (`process_stft`)
+
+```python
+# STFT in, STFT + waveform out — for pipelines that manage STFT themselves
+stft_input = model.get_stft(16000)(waveform, cplx=True)  # (1, F, T) complex
+result = model.process_stft(stft_input)
+# result["stft_out"] -> (1, F_out, T) complex tensor
+# result["waveform"] -> (1, L_out) float tensor
+
+# iSTFT separately if needed
+out_wav = model.get_istft(48000)(result["stft_out"], cplx=True, squeeze=True)
+```
+
+### Long Audio Processing
+
+For audio longer than a few seconds, `process_waveform` automatically switches to chunked overlap-add processing. You can control this explicitly:
+
+```python
+# Auto mode (default): single-pass for short, chunked for long audio
+result = model.process_waveform(waveform)
+
+# Force chunked overlap-add (useful for memory-constrained environments)
+result = model.process_waveform(waveform, mode="css")
+
+# Custom chunk/overlap settings
+result = model.process_waveform(
+    waveform,
+    mode="css",
+    css_config={"chunk_sec": 4.0, "overlap_sec": 0.5},
+)
+```
+
+> **Note**: Chunked processing applies overlap-add with fade windows at chunk boundaries. Each chunk is processed independently — there is no cross-chunk state carry-over.
 
 ## Training & Evaluation
 

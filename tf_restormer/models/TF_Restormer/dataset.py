@@ -340,13 +340,17 @@ class SynthesisDataset(Dataset):
                     ]
                 elif encoder == 'libvorbis':
                     enc_cmd = [
-                        "ffmpeg", "-y", "-loglevel", "error", "-i", in_path,
+                        "ffmpeg", "-y", "-loglevel", "error",
+                        "-strict", "experimental",
+                        "-i", in_path,
                         "-codec:a", "libvorbis",
                         enc_path,
                     ]
                 else:  # opus
                     enc_cmd = [
-                        "ffmpeg", "-y", "-loglevel", "error", "-i", in_path,
+                        "ffmpeg", "-y", "-loglevel", "error",
+                        "-strict", "experimental",
+                        "-i", in_path,
                         "-codec:a", "libopus",
                         enc_path,
                     ]
@@ -383,6 +387,14 @@ class SynthesisDataset(Dataset):
                 decoded, _ = sf.read(dec_path, dtype="float32")
                 if decoded.ndim == 2:
                     decoded = decoded[:, 0]
+
+                # Opus codec introduces a pre-skip (leading silence).
+                # torchaudio.io.AudioEffector strips it internally;
+                # we must do the same to match its output.
+                if encoder == 'libopus' and len(decoded) > original_len:
+                    pre_skip = len(decoded) - original_len
+                    decoded = decoded[pre_skip:]
+
                 if len(decoded) >= original_len:
                     decoded = decoded[:original_len]
                 else:
