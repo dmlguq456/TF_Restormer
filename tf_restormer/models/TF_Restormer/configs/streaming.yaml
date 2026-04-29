@@ -164,6 +164,9 @@ config:
         output_spec:
             online: *var_online
             d_model: *var_model_channels_2nd
+        band_detect:                # inference-only: trim near-zero HF tail
+            enable: true
+            db_below_peak: 60.0     # peak 대비 dB; -60 dB ≈ ratio 1e-3
     # ============================== Training ============================== #
     engine:
         prob_downsample_8k: 0.25

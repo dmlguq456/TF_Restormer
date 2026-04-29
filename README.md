@@ -64,15 +64,15 @@ model = SEInference.from_pretrained(
     device="cuda",
 )
 
-# Restore a file (input should be at its native sample rate, e.g. 16 kHz)
-result = model.process_file("noisy_16k.wav", output_path="restored.wav")
+# Restore a file (fs_in auto-detected from file)
+result = model.process_file("noisy_16k.wav", output_path="restored.wav", fs_out=48000)
 # result["waveform"]    -> (1, L) tensor at 48 kHz
 # result["sample_rate"] -> 48000
 
 # Or restore a waveform tensor directly (fs_in is required — native input rate)
 import torch
 waveform = torch.randn(1, 16000)  # (1, L) at 16 kHz
-result = model.process_waveform(waveform, fs_in=16000)
+result = model.process_waveform(waveform, fs_in=16000, fs_out=48000)
 ```
 
 For STFT-domain I/O, chunk-by-chunk streaming, or session-based processing, see the [Library API](#library-api) section below.
@@ -98,7 +98,7 @@ Pretrained checkpoints will be available on [Hugging Face Hub](https://huggingfa
 | Offline | `shinuh/tf-restormer-baseline` | 16 kHz | 48 kHz | Non-causal, attention-based |
 | Online | `shinuh/tf-restormer-streaming` | 16 kHz | 48 kHz | Mamba SSM, causal streaming |
 
-> **Important**: Input audio must be at its **native sample rate** (e.g., 16 kHz). Do **not** upsample before feeding to the model — the model internally handles bandwidth extension from the input rate to 48 kHz. Feeding pre-upsampled audio (e.g., 16 kHz content resampled to 48 kHz) will bypass frequency extension and produce output with no content above the original Nyquist frequency.
+> **Recommendation**: For best results, feed audio at its **native sample rate** (e.g., 16 kHz) rather than pre-upsampling. The model automatically detects the effective bandwidth and applies frequency extension accordingly. Pre-upsampled input (e.g., 16 kHz content resampled to 48 kHz) is handled via built-in band detection, but providing the native rate avoids unnecessary processing.
 
 ## Examples
 
@@ -142,8 +142,8 @@ Single-call APIs that consume the whole input at once. The three `process_*` met
 #### Level 1: File I/O (`process_file`)
 
 ```python
-# Loads audio at native sample rate (fs_in auto-detected from file), restores, saves result
-result = model.process_file("noisy_16k.wav", output_path="restored.wav")
+# Loads audio at native sample rate (fs_in auto-detected from file)
+result = model.process_file("noisy_16k.wav", output_path="restored.wav", fs_out=48000)
 # result["waveform"]    -> (1, L) tensor at 48 kHz
 # result["sample_rate"] -> 48000
 ```
@@ -156,14 +156,14 @@ result = model.process_file("noisy_16k.wav", output_path="restored.wav")
 import torch
 waveform = torch.randn(1, 16000)  # (1, L) at 16 kHz
 
-# fs_in is required — native input sample rate
+# fs_in and fs_out — input/output sample rates
 # Auto mode: single-pass for short audio, chunked overlap-add for long audio
-result = model.process_waveform(waveform, fs_in=16000)
+result = model.process_waveform(waveform, fs_in=16000, fs_out=48000)
 # result["waveform"] -> (1, L_out) at 48 kHz
 
 # Force single-pass or chunked mode
-result = model.process_waveform(waveform, fs_in=16000, mode="single_pass")
-result = model.process_waveform(waveform, fs_in=16000, mode="css")
+result = model.process_waveform(waveform, fs_in=16000, fs_out=48000, mode="single_pass")
+result = model.process_waveform(waveform, fs_in=16000, fs_out=48000, mode="css")
 ```
 
 #### Level 3: Full STFT (`process_stft`)
@@ -172,7 +172,7 @@ result = model.process_waveform(waveform, fs_in=16000, mode="css")
 # STFT in, STFT + waveform out — for pipelines that manage STFT themselves
 # fs_in is required — must match the rate the STFT was computed at
 stft_input = model.get_stft(16000)(waveform, cplx=True)  # (1, F, T) complex
-result = model.process_stft(stft_input, fs_in=16000)
+result = model.process_stft(stft_input, fs_in=16000, fs_out=48000)
 # result["stft_out"] -> (1, F_out, T) complex tensor
 # result["waveform"] -> (1, L_out) float tensor
 
@@ -187,7 +187,7 @@ For chunk-by-chunk control — supports both batch accumulation and real-time st
 #### Batch (manual chunking with overlap-add)
 
 ```python
-session = model.create_session(streaming=False)
+session = model.create_session(fs_in=16000, fs_out=48000, streaming=False)
 
 # Feed waveform in arbitrary-sized pieces
 for chunk in audio_chunks:
@@ -204,7 +204,7 @@ Feed raw PCM samples and receive enhanced chunks immediately.
 
 ```python
 # fs_in is required in create_session; feed_waveform does not take fs_in
-session = model.create_session(fs_in=16000, streaming=True)
+session = model.create_session(fs_in=16000, fs_out=48000, streaming=True)
 
 while stream_in.is_active():
     waveform = stream_in.read(read_size)
@@ -225,7 +225,7 @@ if tail is not None:
 ```python
 # Seconds-based (auto-converted to STFT frames)
 session = model.create_session(
-    streaming=True,
+    fs_in=16000, fs_out=48000, streaming=True,
     css_config={"chunk_sec": 4.0, "overlap_sec": 0.5},
 )
 
