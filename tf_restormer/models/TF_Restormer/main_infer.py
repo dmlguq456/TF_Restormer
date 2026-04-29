@@ -25,7 +25,6 @@ import torch
 from glob import glob
 from loguru import logger
 from tqdm import tqdm
-from torchaudio.functional import resample as torch_resample
 
 from .model import Model
 from .dataset import get_dataloaders
@@ -44,7 +43,6 @@ def setup_inference(
     config: dict,
     config_name: str,
     fs_src: int = 16000,
-    fs_in: int = 16000,
 ) -> EngineInfer:
     """Create model, load checkpoint, and build an EngineInfer.
 
@@ -54,7 +52,6 @@ def setup_inference(
         config_name: YAML file name (e.g. "baseline.yaml") — used to
                      reconstruct the checkpoint directory path.
         fs_src:      Output sample rate expected from the model (Hz).
-        fs_in:       Input sample rate the model expects (Hz).
 
     Returns:
         A fully initialised EngineInfer with the latest checkpoint loaded.
@@ -81,7 +78,6 @@ def setup_inference(
         model=model,
         device=device,
         fs_src=fs_src,
-        fs_in=fs_in,
     )
     return engine
 
@@ -94,7 +90,6 @@ def _infer_file(
     engine: EngineInfer,
     file_path: str,
     output_dir: str,
-    fs_in: int,
     fs_out: int,
 ) -> None:
     """Enhance a single audio file and write the result to output_dir.
@@ -105,7 +100,6 @@ def _infer_file(
         engine:     Initialised EngineInfer.
         file_path:  Absolute path to the input .wav/.flac file.
         output_dir: Directory where the enhanced file will be written.
-        fs_in:      Sample rate the model expects as input (Hz).
         fs_out:     Sample rate for the output file (Hz).
     """
     os.makedirs(output_dir, exist_ok=True)
@@ -115,12 +109,7 @@ def _infer_file(
         wav_np = wav_np[:, 0]  # keep first channel
     wav = torch.from_numpy(wav_np)
 
-    # Resample to model input rate if needed
-    if orig_fs != fs_in:
-        wav = torch_resample(wav, orig_fs, fs_in,
-                             lowpass_filter_width=64, rolloff=0.98)
-
-    result = engine.infer_session(wav, fs_in=fs_in, fs_out=fs_out)
+    result = engine.infer_session(wav, fs_in=orig_fs, fs_out=fs_out)
     enhanced = result["waveform"].squeeze(0).cpu()  # (L,)
 
     out_name = os.path.splitext(os.path.basename(file_path))[0] + ".wav"
@@ -137,7 +126,6 @@ def _infer_directory(
     engine: EngineInfer,
     input_dir: str,
     output_dir: str,
-    fs_in: int,
     fs_out: int,
 ) -> None:
     """Enhance all .wav/.flac files under input_dir and write to output_dir.
@@ -148,7 +136,6 @@ def _infer_directory(
         engine:     Initialised EngineInfer.
         input_dir:  Root directory to search for audio files.
         output_dir: Root directory for enhanced output files.
-        fs_in:      Sample rate the model expects as input (Hz).
         fs_out:     Sample rate for the output files (Hz).
     """
     wav_files = sorted(glob(os.path.join(input_dir, "**", "*.wav"), recursive=True))
@@ -182,12 +169,7 @@ def _infer_directory(
                     wav_np = wav_np[:, 0]
                 wav = torch.from_numpy(wav_np)
 
-                # Resample to model input rate if needed
-                if orig_fs != fs_in:
-                    wav = torch_resample(wav, orig_fs, fs_in,
-                             lowpass_filter_width=64, rolloff=0.98)
-
-                result = engine.infer_session(wav, fs_in=fs_in, fs_out=fs_out)
+                result = engine.infer_session(wav, fs_in=orig_fs, fs_out=fs_out)
                 enhanced = result["waveform"].squeeze(0).cpu()  # (L,)
 
                 # Normalise peak to avoid clipping
@@ -339,7 +321,6 @@ def main_infer(args: argparse.Namespace) -> None:
         else:
             first_key = testset_keys
         fs_src = config["dataset_test"][first_key]["sample_rate_src"]
-        fs_in = config["dataset_test"][first_key]["sample_rate_in"]
 
         output_path = getattr(args, "output", None) or os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "inference_wav", "folder_output"
@@ -347,12 +328,12 @@ def main_infer(args: argparse.Namespace) -> None:
 
         logger.info(f"[FolderInfer] input={input_path}  output={output_path}")
 
-        engine = setup_inference(args, config, config_name, fs_src=fs_src, fs_in=fs_in)
+        engine = setup_inference(args, config, config_name, fs_src=fs_src)
 
         if os.path.isdir(input_path):
-            _infer_directory(engine, input_path, output_path, fs_in=fs_in, fs_out=fs_src)
+            _infer_directory(engine, input_path, output_path, fs_out=fs_src)
         else:
-            _infer_file(engine, input_path, output_path, fs_in=fs_in, fs_out=fs_src)
+            _infer_file(engine, input_path, output_path, fs_out=fs_src)
         return
 
     # ==================================================================
@@ -383,7 +364,7 @@ def main_infer(args: argparse.Namespace) -> None:
         config["dataset_test"]["testset_key"] = key
 
         fs_src = config["dataset_test"][key]["sample_rate_src"]
-        fs_in = config["dataset_test"][key]["sample_rate_in"]
+        fs_in_label = config["dataset_test"][key]["sample_rate_in"]
 
         dataloaders = get_dataloaders(
             args,
@@ -397,7 +378,6 @@ def main_infer(args: argparse.Namespace) -> None:
             model=model_e,
             device=device,
             fs_src=fs_src,
-            fs_in=fs_in,
         )
 
         # Resolve dump paths
@@ -405,23 +385,23 @@ def main_infer(args: argparse.Namespace) -> None:
             enhanced_dump_path = os.path.join(
                 args.dump_path,
                 "inference_wav",
-                f"{key}_{train_phase}_{config_name[:-5]}_{str(fs_in)[:-3]}kto{str(fs_src)[:-3]}k",
+                f"{key}_{train_phase}_{config_name[:-5]}_{str(fs_in_label)[:-3]}kto{str(fs_src)[:-3]}k",
             )
             input_dump_path = os.path.join(
                 args.dump_path,
                 "inference_wav",
-                f"{key}_input_{str(fs_in)[:-3]}kto{str(fs_src)[:-3]}k",
+                f"{key}_input_{str(fs_in_label)[:-3]}kto{str(fs_src)[:-3]}k",
             )
         else:
             enhanced_dump_path = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)),
                 "inference_wav",
-                f"{key}_{train_phase}_{config_name[:-5]}_{str(fs_in)[:-3]}kto{str(fs_src)[:-3]}k",
+                f"{key}_{train_phase}_{config_name[:-5]}_{str(fs_in_label)[:-3]}kto{str(fs_src)[:-3]}k",
             )
             input_dump_path = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)),
                 "inference_wav",
-                f"{key}_input_{str(fs_in)[:-3]}kto{str(fs_src)[:-3]}k",
+                f"{key}_input_{str(fs_in_label)[:-3]}kto{str(fs_src)[:-3]}k",
             )
 
         logger.info(f"Inference dump path: {enhanced_dump_path}")
