@@ -823,3 +823,194 @@ def load_last_checkpoint_n_get_epoch_model_only(
     model_state = _fix_compiled_state_dict(model_state)
     model.load_state_dict(model_state, strict=False)
 
+
+# ── Step 1.1: stft_chunk_generator ───────────────────────────────────────────
+
+def stft_chunk_generator(
+    chunk_config: dict,
+    stft_mat: torch.Tensor,
+) -> tuple[list[tuple[int, int]], int, int, int, int, torch.Tensor]:
+    """Partition a complex STFT matrix into overlapping chunks for chunked inference.
+
+    The STFT is zero-padded on the right so that the last chunk is complete,
+    then a list of (start, end) frame index pairs is returned along with the
+    metadata needed to reconstruct the full output via ``SEChunkStitcher``.
+
+    Assumptions:
+        - N_h >= N_c >= N_f
+        - Total frame count (T) > N_h
+
+    Args:
+        chunk_config: Dict with keys:
+            ``N_h`` (int) — look-back (history) frames per chunk,
+            ``N_c`` (int) — body (core output) frames per chunk,
+            ``N_f`` (int) — look-ahead (future) frames per chunk.
+        stft_mat: Complex STFT tensor of shape ``(1, F, T)``.
+
+    Returns:
+        Tuple of:
+            chunk_list: List of ``(start_frame, end_frame)`` index pairs.
+            chunk_shift: Frame shift between consecutive chunks (equals N_c).
+            N_h: History frame count (echoed from chunk_config).
+            N_f: Look-ahead frame count (echoed from chunk_config).
+            dummy_frame_len: Number of zero-padding frames appended (excluding
+                the N_f look-ahead guard), used by ``SEChunkStitcher.finalize()``
+                to trim the output.
+            stft_mat_pad: Zero-padded STFT tensor of shape ``(1, F, T_pad)``.
+    """
+    N_h: int = chunk_config["N_h"]
+    N_c: int = chunk_config["N_c"]
+    N_f: int = chunk_config["N_f"]
+    chunk_len: int = N_h + N_c + N_f
+    chunk_shift: int = N_c
+    total_frame: int = stft_mat.shape[2]
+
+    padded_len_short: int = max(N_h - total_frame, 0)
+    padded_len: int = (
+        chunk_shift
+        - max(total_frame - N_h, 0) % chunk_shift
+        + padded_len_short
+        + N_f
+    )
+    last_zeros = torch.zeros(
+        (stft_mat.shape[0], stft_mat.shape[1], padded_len),
+        dtype=stft_mat.dtype,
+        device=stft_mat.device,
+    )
+    stft_mat_pad: torch.Tensor = torch.cat((stft_mat, last_zeros), dim=2)
+    max_chunk_idx: int = (stft_mat_pad.shape[2] - N_h - N_f) // chunk_shift
+    chunk_list: list[tuple[int, int]] = [
+        (chunk_shift * i, chunk_shift * i + chunk_len)
+        for i in range(max_chunk_idx)
+    ]
+    dummy_frame_len: int = last_zeros.shape[2] - N_f
+    return chunk_list, chunk_shift, N_h, N_f, dummy_frame_len, stft_mat_pad
+
+
+# ── Step 1.2: SEChunkStitcher ─────────────────────────────────────────────────
+
+class SEChunkStitcher:
+    """Stateful accumulator for STFT-domain chunk stitching (SE, single-speaker).
+
+    Handles body extraction, optional fade-in/out blending at chunk boundaries,
+    and incremental accumulation. Call ``finalize()`` after all chunks to obtain
+    the trimmed, full-length output.
+
+    Works with both complex ``(1, F, T)`` tensors and real stacked
+    ``(1, F, T, 2)`` tensors — blending operates on the time dimension
+    (second-to-last), so the math is identical for both layouts.
+
+    Usage::
+
+        generator_out = stft_chunk_generator(chunk_config, stft_mat)
+        chunk_list, _, _, _, dummy_len, stft_pad = generator_out
+        stitcher = SEChunkStitcher(chunk_config, device)
+        for idx, (begin, end) in enumerate(chunk_list):
+            chunk_out = model(stft_pad[..., begin:end])  # (1, F, T_chunk) complex
+            stitcher.add_chunk(chunk_out, idx)
+        result = stitcher.finalize(dummy_len)  # (1, F, T_original) complex
+    """
+
+    def __init__(
+        self,
+        chunk_config: dict,
+        device: torch.device,
+        use_blending: bool = True,
+    ) -> None:
+        """
+        Args:
+            chunk_config: Dict with keys ``N_h``, ``N_c``, ``N_f``.
+            device: Torch device for fade window tensors.
+            use_blending: Enable fade-in/out blending at chunk boundaries.
+                          Set to False for hard-cut stitching.
+        """
+        self.N_h: int = chunk_config["N_h"]
+        self.N_c: int = chunk_config["N_c"]
+        self.N_f: int = chunk_config["N_f"]
+        self.device = device
+        self.use_blending = use_blending
+
+        if use_blending:
+            self.fade_out = torch.linspace(1.0, 0.0, self.N_f, device=device)
+            self.fade_in = torch.linspace(0.0, 1.0, self.N_f, device=device)
+
+        self.prev_tail: torch.Tensor | None = None
+        self.body_list: list[torch.Tensor] = []
+
+    def _get_body_range(self, chunk_idx: int) -> tuple[int, int]:
+        """Return (begin, end) slice indices for the valid body region of a chunk.
+
+        First chunk: body spans ``[0, N_h + N_c)`` (includes history region).
+        Subsequent chunks: body spans ``[N_h, N_h + N_c)`` (history overlaps
+        with the previous chunk's body).
+
+        Args:
+            chunk_idx: Zero-based sequential chunk index.
+
+        Returns:
+            ``(begin, end)`` integer pair for slicing the time dimension.
+        """
+        if chunk_idx == 0:
+            return 0, self.N_h + self.N_c
+        return self.N_h, self.N_h + self.N_c
+
+    def add_chunk(
+        self,
+        stft_out: torch.Tensor,
+        chunk_idx: int,
+        accumulate: bool = True,
+    ) -> torch.Tensor:
+        """Process one chunk's STFT output and return the confirmed body.
+
+        Extracts the body region, blends the leading N_f frames with the
+        stored tail from the previous chunk (if blending is enabled), stores
+        the current tail for the next chunk, and optionally appends the body
+        to the internal list for ``finalize()``.
+
+        Args:
+            stft_out: Model output for this chunk, shape ``(1, F, T_chunk)``
+                (complex) or ``(1, F, T_chunk, 2)`` (real stacked). The time
+                dimension is ``dim=-2`` for 4-D tensors and ``dim=-1`` for 3-D.
+            chunk_idx: Zero-based sequential chunk index.
+            accumulate: If True (default), store the body for ``finalize()``.
+                        Set to False for streaming to avoid memory buildup.
+
+        Returns:
+            Body tensor with time length ``N_h + N_c`` (first chunk) or
+            ``N_c`` (subsequent chunks), same dtype/shape as ``stft_out``
+            except trimmed on the time axis.
+        """
+        begin, end = self._get_body_range(chunk_idx)
+        body: torch.Tensor = stft_out[..., begin:end]
+
+        if self.use_blending:
+            if self.prev_tail is not None:
+                body = body.clone()
+                body[..., :self.N_f] = (
+                    body[..., :self.N_f] * self.fade_in + self.prev_tail
+                )
+            tail_region: torch.Tensor = stft_out[..., self.N_h + self.N_c:]
+            self.prev_tail = tail_region * self.fade_out
+
+        if accumulate:
+            self.body_list.append(body)
+
+        return body
+
+    def finalize(self, dummy_len: int) -> torch.Tensor:
+        """Concatenate all accumulated chunks and trim zero-padding.
+
+        Args:
+            dummy_len: Number of dummy (zero-padded) frames to trim from the
+                end of the concatenated output. Obtained from
+                ``stft_chunk_generator()`` return value.
+
+        Returns:
+            Full-length STFT tensor with time length matching the original
+            (unpadded) input, same dtype as the chunk tensors.
+        """
+        stft_out: torch.Tensor = torch.cat(self.body_list, dim=-1)
+        if dummy_len > 0:
+            stft_out = stft_out[..., :-dummy_len]
+        return stft_out
+

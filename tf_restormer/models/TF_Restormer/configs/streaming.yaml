@@ -273,3 +273,9 @@ config:
     inference:
         alpha: 0.2
         max_iter: 3
+        chunk_sec: 4.0          # backward compat — auto-converted to N_h/N_c/N_f
+        overlap_sec: 0.5        # backward compat — auto-converted
+        # Direct STFT-frame settings (override chunk_sec/overlap_sec when present):
+        # N_h: 25               # history frames (context before body)
+        # N_c: 150              # center/body frames (valid output region)
+        # N_f: 25               # future frames (context after body)

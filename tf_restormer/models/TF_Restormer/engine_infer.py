@@ -76,6 +76,14 @@ class EngineInfer:
         _infer_cfg = config.get("inference", {})
         self.chunk_sec: float = _infer_cfg.get("chunk_sec", 4.0)
         self.overlap_sec: float = _infer_cfg.get("overlap_sec", 0.5)
+        # STFT-frame chunk config (optional — resolved lazily by _resolve_chunk_config)
+        self._stft_chunk_config: dict | None = None
+        if "N_h" in _infer_cfg and "N_c" in _infer_cfg and "N_f" in _infer_cfg:
+            self._stft_chunk_config = {
+                "N_h": int(_infer_cfg["N_h"]),
+                "N_c": max(1, int(_infer_cfg["N_c"])),
+                "N_f": int(_infer_cfg["N_f"]),
+            }
 
     # ======================================================================
     # Public API
@@ -89,6 +97,10 @@ class EngineInfer:
         fs_out: int | None = None,
     ) -> dict:
         """Process a single waveform chunk through the model.
+
+        Thin wrapper around ``infer_stft_chunk``: performs STFT on the input
+        waveform, delegates the model forward to ``infer_stft_chunk``, then
+        applies iSTFT to produce the output waveform.
 
         Args:
             waveform_chunk: Raw waveform, shape ``(1, L)`` or ``(L,)``.
@@ -113,30 +125,55 @@ class EngineInfer:
         _fs_in = fs_in if fs_in is not None else self.fs_in
         _fs_out = fs_out if fs_out is not None else self.fs_src
 
+        # ---- STFT key lookup (nearest fallback for non-standard rates) ----
+        stft_key = self._resolve_stft_key(_fs_in)
+        istft_key = self._resolve_stft_key(_fs_out)
+
+        # ---- STFT -> infer_stft_chunk -> iSTFT ----
+        X = self.stft[stft_key](x, cplx=True)                              # (1, F, T)
+        out_cplx = self.infer_stft_chunk(X, fs_out=_fs_out)                # (1, F_out, T)
+        out_wav = self.istft[istft_key](out_cplx, cplx=True, squeeze=False)  # (1, L)
+
+        return {"waveform": out_wav}
+
+    @torch.inference_mode()
+    def infer_stft_chunk(
+        self,
+        stft_chunk: torch.Tensor,
+        fs_out: int | None = None,
+    ) -> torch.Tensor:
+        """Run model forward on a pre-computed STFT chunk (no STFT/iSTFT).
+
+        This is the core model-forward operation extracted from ``infer_chunk``.
+        Callers that already hold a complex STFT tensor (e.g. ``_css_session``
+        and ``InferenceSession``) should call this directly to avoid redundant
+        STFT/iSTFT round-trips.
+
+        Args:
+            stft_chunk: Complex STFT tensor ``(1, F, T_chunk)`` on
+                        ``self.device``.  Any dtype is accepted — cast to
+                        complex64 automatically if needed.
+            fs_out:     Output sample rate (Hz) used to compute the number of
+                        output frequency bins (``out_F``).  Defaults to
+                        ``self.fs_src``.
+
+        Returns:
+            Complex STFT tensor ``(1, F_out, T_chunk)`` on ``self.device``.
+        """
+        _fs_out = fs_out if fs_out is not None else self.fs_src
+
         # ---- per-call out_F ----
         if fs_out is None:
             out_F = self.out_F
         else:
             out_F = int(self.frame_length * int(_fs_out) / 1000) // 2 + 1
 
-        # ---- nearest STFT key fallback for non-standard sample rates ----
-        stft_key = str(_fs_in)
-        if stft_key not in self.stft:
-            stft_key = min(self.fs_list, key=lambda k: abs(int(k) - _fs_in))
-
-        # ---- nearest iSTFT key fallback (mirrors STFT fallback above) ----
-        istft_key = str(_fs_out)
-        if istft_key not in self.istft:
-            istft_key = min(self.fs_list, key=lambda k: abs(int(k) - _fs_out))
-
-        # ---- STFT -> model -> iSTFT pipeline ----
-        X = self.stft[stft_key](x, cplx=True)                         # (1, F, T)
-        model_input = torch.stack([torch.real(X), torch.imag(X)], dim=-1)  # (1, F, T, 2)
-        comp = self.model(model_input, out_F=out_F)                    # (1, F, T, 2)
-        out_cplx = torch.complex(comp[..., 0], comp[..., 1])           # (1, F, T)
-        out_wav = self.istft[istft_key](out_cplx, cplx=True, squeeze=False)  # (1, L)
-
-        return {"waveform": out_wav}
+        # ---- model forward: complex → stacked → model → complex ----
+        model_input = torch.stack(
+            [torch.real(stft_chunk), torch.imag(stft_chunk)], dim=-1
+        )  # (1, F, T, 2)
+        comp = self.model(model_input, out_F=out_F)  # (1, F_out, T, 2)
+        return torch.complex(comp[..., 0], comp[..., 1])  # (1, F_out, T)
 
     @torch.inference_mode()
     def infer_session(
@@ -206,94 +243,171 @@ class EngineInfer:
         css_config: dict | None = None,
         show_progress: bool = False,
     ) -> torch.Tensor:
-        """Chunked-streaming synthesis (CSS) with Hann-fade overlap-add.
+        """Chunked-streaming synthesis (CSS) using STFT-domain context-aware chunking.
+
+        Performs a single global STFT on the full waveform, then iterates over
+        overlapping STFT-frame chunks (N_h|N_c|N_f pattern) using
+        ``stft_chunk_generator`` and ``SEChunkStitcher``.  A single global iSTFT
+        is applied to the stitched output, avoiding per-chunk STFT/iSTFT overhead
+        and boundary artifacts.
 
         Args:
-            waveform:   1-D tensor ``(L,)`` on any device / dtype.
-            fs_in:      Input sample rate (Hz).
-            fs_out:     Output sample rate (Hz).  Defaults to ``self.fs_src``.
-            css_config: Optional dict with ``chunk_sec`` / ``overlap_sec``
-                        overrides for this call.
-            show_progress: Show tqdm progress bar.
+            waveform:      1-D tensor ``(L,)`` on any device / dtype.
+            fs_in:         Input sample rate (Hz).
+            fs_out:        Output sample rate (Hz).  Defaults to ``self.fs_src``.
+            css_config:    Optional dict to override chunk parameters.  Accepts
+                           ``N_h``/``N_c``/``N_f`` (frames) or
+                           ``chunk_sec``/``overlap_sec`` (seconds, auto-converted).
+            show_progress: Show tqdm progress bar during the chunk loop.
 
         Returns:
             Enhanced waveform tensor, shape ``(1, L_out)`` on ``self.device``,
             where ``L_out`` is in **output sample rate (fs_out) space**.
-            When ``fs_out == fs_in``, ``L_out == L_in`` (no change).
+            When ``fs_out == fs_in``, ``L_out == L_in`` (no change in length).
         """
+        from tf_restormer.utils.util_engine import stft_chunk_generator, SEChunkStitcher
+
         _fs_out = fs_out if fs_out is not None else self.fs_src
 
-        # ---- resolve chunk / overlap lengths (input space, fs_in) ----
-        _cfg = css_config or {}
-        chunk_sec = _cfg.get("chunk_sec", self.chunk_sec)
-        overlap_sec = _cfg.get("overlap_sec", self.overlap_sec)
+        # ---- resolve STFT keys ----
+        stft_key = self._resolve_stft_key(fs_in)
+        istft_key = self._resolve_stft_key(_fs_out)
 
-        chunk_len = int(chunk_sec * fs_in)
-        overlap_len = int(overlap_sec * fs_in)
-        hop_len = chunk_len - overlap_len
-        total_len = waveform.shape[0]
+        # ---- resolve N_h / N_c / N_f ----
+        chunk_cfg = self._resolve_chunk_config(css_config, fs_in)
+        N_h = chunk_cfg["N_h"]
+        N_c = chunk_cfg["N_c"]
+        N_f = chunk_cfg["N_f"]
+        chunk_len_frames = N_h + N_c + N_f  # total frames per chunk
 
-        # Short clip: fall back to single-pass
-        if total_len <= chunk_len:
-            return self.infer_chunk(
-                waveform.unsqueeze(0), fs_in=fs_in, fs_out=_fs_out
+        # ---- global STFT (single pass) ----
+        wav = waveform.to(self.device).to(torch.float32)
+        if wav.dim() == 1:
+            wav = wav.unsqueeze(0)  # (1, L)
+        stft_in = self.stft[stft_key](wav, cplx=True)  # (1, F_in, T)
+        total_frames = stft_in.shape[2]
+
+        # ---- short-clip fallback: delegate to single-pass ----
+        if total_frames <= chunk_len_frames:
+            return self._single_pass_session(
+                waveform, fs_in=fs_in, fs_out=_fs_out
             )["waveform"]  # (1, L_out)
 
-        # ---- output-space sizing (handles fs_out != fs_in) ----
-        out_ratio = _fs_out / fs_in
-        out_chunk_len = int(chunk_sec * _fs_out)
-        out_overlap_len = int(overlap_sec * _fs_out)
-        out_total_len = int(total_len * out_ratio)
+        # ---- expected output length in waveform samples ----
+        out_total_len = int(waveform.shape[0] * _fs_out / fs_in)
 
-        # Accumulation buffers on CPU to avoid OOM for long recordings
-        out_wav = torch.zeros(out_total_len, dtype=torch.float32)
-        weight = torch.zeros(out_total_len, dtype=torch.float32)
+        # ---- build chunk list via generator ----
+        gen_out = stft_chunk_generator(chunk_cfg, stft_in)
+        chunk_list, _shift, _N_h, _N_f, dummy_frame_len, stft_pad = gen_out
 
-        # Hann-based linear fade window — sized for OUTPUT chunk length
-        fade = torch.ones(out_chunk_len, dtype=torch.float32)
-        if out_overlap_len > 0:
-            fade[:out_overlap_len] = torch.linspace(0.0, 1.0, out_overlap_len)
-            fade[-out_overlap_len:] = torch.linspace(1.0, 0.0, out_overlap_len)
+        # ---- stitcher for STFT-domain accumulation ----
+        stitcher = SEChunkStitcher(chunk_cfg, device=self.device, use_blending=True)
 
         # ---- optional progress bar ----
-        positions = list(range(0, total_len, hop_len))
+        indexed_chunks: list | object = list(enumerate(chunk_list))
         if show_progress:
             try:
                 from tqdm import tqdm as _tqdm
-                positions = _tqdm(positions, unit="chunk", dynamic_ncols=True, colour="CYAN")
+                indexed_chunks = _tqdm(
+                    indexed_chunks, unit="chunk", dynamic_ncols=True, colour="CYAN"
+                )
             except ImportError:
                 logger.warning("tqdm not installed — show_progress ignored.")
 
-        # ---- chunked processing loop ----
-        # Input chunking stays in fs_in space; output accumulation uses fs_out space.
-        for start in positions:
-            end = min(start + chunk_len, total_len)
-            chunk = waveform[start:end]
+        # ---- STFT-domain chunk loop ----
+        # SEChunkStitcher slices on dim=-1 (last dim), so pass complex (1, F, T)
+        # tensors directly — time is the last dimension for complex tensors.
+        for chunk_idx, (begin, end) in indexed_chunks:
+            stft_chunk = stft_pad[..., begin:end]  # (1, F_in, chunk_len_frames)
+            out_cplx = self.infer_stft_chunk(stft_chunk, fs_out=_fs_out)  # (1, F_out, T_chunk)
+            stitcher.add_chunk(out_cplx, chunk_idx, accumulate=True)
 
-            pad_len = chunk_len - chunk.shape[0]
-            if pad_len > 0:
-                chunk = torch.nn.functional.pad(chunk, (0, pad_len))
+        # ---- finalize stitcher → trim dummy frames → global iSTFT ----
+        result_cplx = stitcher.finalize(dummy_frame_len)  # (1, F_out, T_out) complex
+        out_wav = self.istft[istft_key](result_cplx, cplx=True, squeeze=False)  # (1, L_out_raw)
 
-            enhanced_chunk = self.infer_chunk(
-                chunk.unsqueeze(0), fs_in=fs_in, fs_out=_fs_out
-            )["waveform"].squeeze(0).cpu()  # (out_chunk_len,)
+        # ---- trim to expected output length (compensate for STFT boundary padding) ----
+        out_wav = out_wav[:, :out_total_len]
 
-            # Map input position to output position via sample-rate ratio
-            out_start = int(start * out_ratio)
-            # Clamp to prevent overflow on the last (zero-padded) chunk
-            out_actual_len = min(enhanced_chunk.shape[0], out_total_len - out_start)
-            out_end = out_start + out_actual_len
+        return out_wav  # (1, L_out)
 
-            w = fade[:out_actual_len]
+    def _resolve_stft_key(self, fs: int) -> str:
+        """Return the nearest key in ``self.stft``/``self.istft`` for *fs*.
 
-            out_wav[out_start:out_end] += enhanced_chunk[:out_actual_len] * w
-            weight[out_start:out_end] += w
+        If *fs* exactly matches an element of ``self.fs_list``, that element
+        is returned as-is.  Otherwise, the element with the smallest absolute
+        difference is returned.
 
-        # Normalise by accumulated weight (avoid div-by-zero at edges)
-        weight = weight.clamp(min=1e-8)
-        out_wav = out_wav / weight
+        Args:
+            fs: Sample rate (Hz) to look up.
 
-        return out_wav.unsqueeze(0).to(self.device)  # (1, L_out)
+        Returns:
+            A key from ``self.fs_list`` (str) suitable for indexing
+            ``self.stft`` or ``self.istft``.
+        """
+        key = str(fs)
+        if key in self.stft:
+            return key
+        return min(self.fs_list, key=lambda k: abs(int(k) - fs))
+
+    def _resolve_chunk_config(
+        self, css_config: dict | None, fs_in: int
+    ) -> dict:
+        """Resolve STFT-frame chunk parameters (N_h, N_c, N_f).
+
+        Resolution priority (highest to lowest):
+        1. Explicit ``N_h``/``N_c``/``N_f`` in *css_config*.
+        2. ``chunk_sec``/``overlap_sec`` in *css_config* (converted to frames).
+        3. ``self._stft_chunk_config`` (N_h/N_c/N_f from config YAML).
+        4. Instance defaults (``self.chunk_sec`` / ``self.overlap_sec``),
+           converted to STFT frames.
+
+        Conversion formula::
+
+            total_frames  = int(chunk_sec  * fs_in / frame_hop)
+            overlap_frames = int(overlap_sec * fs_in / frame_hop)
+            N_h = N_f = overlap_frames
+            N_c = total_frames - 2 * overlap_frames
+
+        Args:
+            css_config: Optional per-call override dict.
+            fs_in:      Input sample rate (Hz) used for frame conversion.
+
+        Returns:
+            Dict with integer keys ``N_h``, ``N_c``, ``N_f``.
+        """
+        _cfg = css_config or {}
+
+        # Priority 1: explicit frame counts in css_config
+        if "N_h" in _cfg and "N_c" in _cfg and "N_f" in _cfg:
+            return {
+                "N_h": int(_cfg["N_h"]),
+                "N_c": max(1, int(_cfg["N_c"])),
+                "N_f": int(_cfg["N_f"]),
+            }
+
+        # Priority 2: sec-based values in css_config
+        if "chunk_sec" in _cfg or "overlap_sec" in _cfg:
+            chunk_sec = float(_cfg.get("chunk_sec", self.chunk_sec))
+            overlap_sec = float(_cfg.get("overlap_sec", self.overlap_sec))
+            stft_key = self._resolve_stft_key(fs_in)
+            frame_hop = self.stft[stft_key].stride
+            total_frames = int(chunk_sec * fs_in / frame_hop)
+            overlap_frames = int(overlap_sec * fs_in / frame_hop)
+            N_c = max(1, total_frames - 2 * overlap_frames)
+            return {"N_h": overlap_frames, "N_c": N_c, "N_f": overlap_frames}
+
+        # Priority 3: pre-parsed STFT chunk config from YAML
+        if self._stft_chunk_config is not None:
+            return dict(self._stft_chunk_config)
+
+        # Priority 4: instance defaults
+        stft_key = self._resolve_stft_key(fs_in)
+        frame_hop = self.stft[stft_key].stride
+        total_frames = int(self.chunk_sec * fs_in / frame_hop)
+        overlap_frames = int(self.overlap_sec * fs_in / frame_hop)
+        N_c = max(1, total_frames - 2 * overlap_frames)
+        return {"N_h": overlap_frames, "N_c": N_c, "N_f": overlap_frames}
 
     def _single_pass_session(
         self,
