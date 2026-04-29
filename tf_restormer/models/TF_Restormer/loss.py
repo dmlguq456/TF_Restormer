@@ -37,7 +37,9 @@ class SSL_FM_Loss(torch.nn.Module):
 		self.feat_extractor.eval()
 		if resampler['orig_freq'] != resampler['new_freq']:
 			self.resampler = Resample(orig_freq=resampler['orig_freq'],
-									 new_freq=resampler['new_freq']).to(device)
+									 new_freq=resampler['new_freq'],
+									 lowpass_filter_width=64,
+									 rolloff=0.98).to(device)
 
 	def normalize(self, x):
 		mean = x.mean(dim=1, keepdim=True)

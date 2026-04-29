@@ -192,7 +192,9 @@ def _build_speechbleu(sr: int, model_type: str, vocab: int, layer: Optional[int]
 
     km_path = _resolve_km_path(vocab)
     apply_kmeans = _ApplyKmeans(km_path, device=device)
-    resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000).to(device)
+    resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000,
+                                              lowpass_filter_width=64,
+                                              rolloff=0.98).to(device)
 
     # Encode all state into a namespace-like object
     class _SpeechBLEU:
@@ -264,7 +266,9 @@ def _build_speechbertscore(sr: int, model_type: str, layer: Optional[int], devic
 
     model.eval()
     model.to(device)
-    resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000).to(device)
+    resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000,
+                                              lowpass_filter_width=64,
+                                              rolloff=0.98).to(device)
 
     class _SpeechBERTScore:
         pass
@@ -327,7 +331,9 @@ def _build_speechtokendist(sr: int, model_type: str, vocab: int, layer: Optional
 
     km_path = _resolve_km_path(vocab)
     apply_kmeans = _ApplyKmeans(km_path, device=device)
-    resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000).to(device)
+    resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000,
+                                              lowpass_filter_width=64,
+                                              rolloff=0.98).to(device)
 
     class _SpeechTokenDist:
         pass

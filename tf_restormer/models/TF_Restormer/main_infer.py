@@ -117,7 +117,8 @@ def _infer_file(
 
     # Resample to model input rate if needed
     if orig_fs != fs_in:
-        wav = torch_resample(wav, orig_fs, fs_in)
+        wav = torch_resample(wav, orig_fs, fs_in,
+                             lowpass_filter_width=64, rolloff=0.98)
 
     result = engine.infer_session(wav, fs_in=fs_in, fs_out=fs_out)
     enhanced = result["waveform"].squeeze(0).cpu()  # (L,)
@@ -183,7 +184,8 @@ def _infer_directory(
 
                 # Resample to model input rate if needed
                 if orig_fs != fs_in:
-                    wav = torch_resample(wav, orig_fs, fs_in)
+                    wav = torch_resample(wav, orig_fs, fs_in,
+                             lowpass_filter_width=64, rolloff=0.98)
 
                 result = engine.infer_session(wav, fs_in=fs_in, fs_out=fs_out)
                 enhanced = result["waveform"].squeeze(0).cpu()  # (L,)

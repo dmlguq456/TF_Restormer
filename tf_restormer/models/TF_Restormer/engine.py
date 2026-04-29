@@ -135,14 +135,14 @@ class Engine(object):
         """Randomly downsample to 8kHz for bandwidth-extension training."""
         if random.random() < self.prob_downsample_8k:
             audio = torch_resample(audio, orig_freq=16000, new_freq=8000,
-                                   lowpass_filter_width=32, rolloff=0.98)
+                                   lowpass_filter_width=64, rolloff=0.98)
             return audio, 8000
         return audio, 16000
 
     def target_downsample(self, target: torch.Tensor) -> tuple[torch.Tensor, int, int]:
         if random.random() < self.prob_downsample_src:
             fs_target = int(random.choice(self.fs_list_src))
-            target = torch_resample(target, orig_freq=self.fs_src, new_freq=fs_target, lowpass_filter_width=32, rolloff=0.98)
+            target = torch_resample(target, orig_freq=self.fs_src, new_freq=fs_target, lowpass_filter_width=64, rolloff=0.98)
             out_F = int(self.config['stft']['frame_length'] * fs_target / 1000) // 2 + 1
         else:
             fs_target = self.fs_src
@@ -241,8 +241,8 @@ class Engine(object):
             if 'pretrain' in self.train_phase: # only when pretraining w/o adversarial training
                 cur_loss_gen = cur_loss_se*self.w['se'] + cur_loss_time*self.w['time'] + cur_loss_rep*self.w['ssl']
             else:
-                src_wav_16k = torch_resample(src_wav, orig_freq=fs_target, new_freq=16000, lowpass_filter_width=32, rolloff=0.98) if fs_target != 16000 else src_wav
-                out_wav_16k = torch_resample(out_wav, orig_freq=fs_target, new_freq=16000, lowpass_filter_width=32, rolloff=0.98) if fs_target != 16000 else out_wav
+                src_wav_16k = torch_resample(src_wav, orig_freq=fs_target, new_freq=16000, lowpass_filter_width=64, rolloff=0.98) if fs_target != 16000 else src_wav
+                out_wav_16k = torch_resample(out_wav, orig_freq=fs_target, new_freq=16000, lowpass_filter_width=64, rolloff=0.98) if fs_target != 16000 else out_wav
                 cur_loss_pesq = self.loss_hf(src_wav_16k, out_wav_16k)
                 tot_loss_pesq += cur_loss_pesq.item()
                 cur_loss_disc = self._discriminator_step(out_wav, src_wav, fs_target, update=True)
@@ -329,8 +329,8 @@ class Engine(object):
                 tot_loss_rep += cur_loss_rep.item()
                 # adversarial training + PESQ loss
                 if 'adversarial' in self.train_phase:
-                    src_wav_16k = torch_resample(src_wav, orig_freq=fs_target, new_freq=16000, lowpass_filter_width=32, rolloff=0.98) if fs_target != 16000 else src_wav
-                    out_wav_16k = torch_resample(out_wav, orig_freq=fs_target, new_freq=16000, lowpass_filter_width=32, rolloff=0.98) if fs_target != 16000 else out_wav
+                    src_wav_16k = torch_resample(src_wav, orig_freq=fs_target, new_freq=16000, lowpass_filter_width=64, rolloff=0.98) if fs_target != 16000 else src_wav
+                    out_wav_16k = torch_resample(out_wav, orig_freq=fs_target, new_freq=16000, lowpass_filter_width=64, rolloff=0.98) if fs_target != 16000 else out_wav
                     cur_loss_pesq = self.loss_hf(src_wav_16k, out_wav_16k)
                     tot_loss_pesq += cur_loss_pesq.item()
                     cur_loss_disc = self._discriminator_step(out_wav, src_wav, fs_target, update=False)
@@ -371,11 +371,11 @@ class Engine(object):
         self.writer_src.log_audio(noisy, 'noisy_distort_audio', epoch)
 
         estim_src = self.istft[str(fs_target)](out, cplx=True)
-        estim_src = torch_resample(estim_src, orig_freq=fs_target, new_freq=self.fs_src, lowpass_filter_width=32, rolloff=0.98) if fs_target != self.fs_src else estim_src
+        estim_src = torch_resample(estim_src, orig_freq=fs_target, new_freq=self.fs_src, lowpass_filter_width=64, rolloff=0.98) if fs_target != self.fs_src else estim_src
         self.writer_src.log_wav2spec(estim_src[0], "enhance_out", epoch)
         self.writer_src.log_audio(estim_src[0], 'estim_enhance_audio', epoch)
 
-        target = torch_resample(target, orig_freq=fs_target, new_freq=self.fs_src, lowpass_filter_width=32, rolloff=0.98) if fs_target != self.fs_src else target
+        target = torch_resample(target, orig_freq=fs_target, new_freq=self.fs_src, lowpass_filter_width=64, rolloff=0.98) if fs_target != self.fs_src else target
         self.writer_src.log_wav2spec(target[0], "clean", epoch)
         self.writer_src.log_audio(target[0], 'clean_audio', epoch)
 

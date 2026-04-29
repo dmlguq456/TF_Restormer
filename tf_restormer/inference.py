@@ -872,7 +872,8 @@ class SEInference(_BaseInference):
             logger.info(
                 f"Resampling input from {_fs_in} Hz -> {self._fs_in} Hz."
             )
-            wav = F_audio.resample(wav, _fs_in, self._fs_in)
+            wav = F_audio.resample(wav, _fs_in, self._fs_in,
+                                  lowpass_filter_width=64, rolloff=0.98)
             _fs_in = self._fs_in
 
         result = self.process_waveform(wav, fs_in=_fs_in, fs_out=fs_out)

@@ -36,7 +36,7 @@ class EngineEval(object):
         self.metrics_key = config['dataset_test'][testset_key].get('metrics', [])
         self.resampler = T.Resample(orig_freq=self.fs_src, new_freq=16000,
                                     resampling_method='sinc_interp_hann',
-                                    lowpass_filter_width=32,
+                                    lowpass_filter_width=64,
                                     rolloff=0.98).to(self.device)
         # loss configuration (lazy import — optional train extras)
         self.train_phase = config["train_phase"]
