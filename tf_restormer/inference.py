@@ -39,6 +39,7 @@ Streaming / session API::
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import torch
@@ -50,6 +51,7 @@ from tf_restormer.models.TF_Restormer.engine_infer import EngineInfer
 from tf_restormer.utils.util_engine import (
     _fix_compiled_state_dict,
     _find_latest_checkpoint,
+    SEChunkStitcher,
 )
 
 # ---------------------------------------------------------------------------
@@ -290,30 +292,55 @@ class InferenceSession:
             chunk_sec = css_config.get("chunk_sec", chunk_sec)
             overlap_sec = css_config.get("overlap_sec", overlap_sec)
 
-        self._chunk_len = int(chunk_sec * self._fs_in)
-        self._overlap_len = int(overlap_sec * self._fs_in)
-        self._hop_len = self._chunk_len - self._overlap_len
+        # ---- Resolve STFT key via nearest-key fallback (same as engine_infer) ----
+        stft_key = str(self._fs_in)
+        if stft_key not in engine.stft:
+            stft_key = min(engine.fs_list, key=lambda k: abs(int(k) - self._fs_in))
 
-        # Output-space sizing (handles fs_out != fs_in)
-        out_ratio = self._fs_out / self._fs_in
-        self._out_chunk_len = int(chunk_sec * self._fs_out)
-        self._out_overlap_len = int(overlap_sec * self._fs_out)
-        self._out_ratio = out_ratio
+        # ---- STFT / iSTFT references ----
+        self._stft = engine.stft[stft_key]
+        istft_key = str(self._fs_out)
+        if istft_key not in engine.istft:
+            istft_key = min(engine.fs_list, key=lambda k: abs(int(k) - self._fs_out))
+        self._istft = engine.istft[istft_key]
 
-        # Hann-based linear fade window sized for OUTPUT chunk length
-        self._fade = torch.ones(self._out_chunk_len, dtype=torch.float32)
-        if self._out_overlap_len > 0:
-            self._fade[:self._out_overlap_len] = torch.linspace(0.0, 1.0, self._out_overlap_len)
-            self._fade[-self._out_overlap_len:] = torch.linspace(1.0, 0.0, self._out_overlap_len)
+        # ---- Frame dimensions from STFT object ----
+        self._frame_len: int = self._stft.N
+        self._frame_hop: int = self._stft.stride
+        assert self._stft.N == int(engine.frame_length * self._fs_in / 1000), (
+            f"STFT.N ({self._stft.N}) != frame_length*fs_in/1000 "
+            f"({int(engine.frame_length * self._fs_in / 1000)})"
+        )
 
-        # Internal state
+        # ---- STFT-frame chunk parameters ----
+        frame_hop = self._frame_hop
+        total_frames = int(chunk_sec * self._fs_in / frame_hop)
+        overlap_frames = int(overlap_sec * self._fs_in / frame_hop)
+        self._N_h: int = overlap_frames
+        self._N_c: int = max(1, total_frames - 2 * overlap_frames)
+        self._N_f: int = overlap_frames
+
+        # ---- Waveform-space chunk / shift sizes (derived from STFT frames) ----
+        # A full chunk spans (N_h + N_c + N_f - 1) hops + one frame length.
+        self._chunk_samples: int = (
+            (self._N_h + self._N_c + self._N_f - 1) * frame_hop + self._frame_len
+        )
+        # Advance buffer by N_c frames per chunk.
+        self._shift_samples: int = self._N_c * frame_hop
+
+        # ---- Output ratio for final length trimming ----
+        self._out_ratio: float = self._fs_out / self._fs_in
+
+        # ---- SEChunkStitcher (handles body extraction + blending) ----
+        chunk_config = {"N_h": self._N_h, "N_c": self._N_c, "N_f": self._N_f}
+        self._stitcher = SEChunkStitcher(
+            chunk_config, device=engine.device, use_blending=True
+        )
+
+        # ---- Internal state ----
         self._wav_buffer: torch.Tensor | None = None
         self._total_input_samples: int = 0
-
-        # Batch-mode accumulation buffers (allocated lazily on first chunk)
-        self._out_buffer: torch.Tensor | None = None
-        self._weight_buffer: torch.Tensor | None = None
-        self._out_pos: int = 0  # current write position in output space
+        self._chunk_idx: int = 0
 
     # ------------------------------------------------------------------
     # Public API
@@ -339,7 +366,6 @@ class InferenceSession:
             list[dict]: One dict per complete chunk processed.  Each dict has
             key ``"waveform"`` → ``(1, L_out)`` enhanced tensor.
         """
-        _fs_in = fs_in if fs_in is not None else self._fs_in
         _fs_out = fs_out if fs_out is not None else self._fs_out
 
         wav = waveform.to(self._parent.device).to(torch.float32)
@@ -354,22 +380,27 @@ class InferenceSession:
             self._wav_buffer = torch.cat([self._wav_buffer, wav], dim=0)
 
         results = []
-        while self._wav_buffer.shape[0] >= self._chunk_len:
-            chunk = self._wav_buffer[: self._chunk_len]
-            enhanced = self._parent.engine.infer_chunk(
-                chunk.unsqueeze(0), fs_in=_fs_in, fs_out=_fs_out
-            )  # {"waveform": (1, L_out)}
+        while self._wav_buffer.shape[0] >= self._chunk_samples:
+            chunk = self._wav_buffer[: self._chunk_samples]  # (chunk_samples,)
+            stft_chunk = self._stft(chunk.unsqueeze(0), cplx=True)  # (1, F, T_chunk)
+            out_cplx = self._parent.engine.infer_stft_chunk(
+                stft_chunk, fs_out=_fs_out
+            )  # (1, F_out, T_chunk)
+
+            body = self._stitcher.add_chunk(
+                out_cplx, self._chunk_idx, accumulate=not self._streaming
+            )  # (1, F_out, T_body)
+            self._chunk_idx += 1
 
             if self._streaming:
-                results.append(enhanced)
+                out_wav = self._istft(body, cplx=True, squeeze=False)  # (1, L_body)
+                results.append({"waveform": out_wav})
             else:
-                self._accumulate(enhanced["waveform"].squeeze(0).cpu())
-                # In batch mode, return body only (overlap region excluded)
-                body_start = self._out_overlap_len
-                body = enhanced["waveform"][:, body_start:]
-                results.append({"waveform": body})
+                # In batch mode, bodies are accumulated inside the stitcher.
+                # Return a lightweight indicator for progress tracking.
+                results.append({"waveform": self._istft(body, cplx=True, squeeze=False)})
 
-            self._wav_buffer = self._wav_buffer[self._hop_len :]
+            self._wav_buffer = self._wav_buffer[self._shift_samples :]
 
         return results
 
@@ -381,6 +412,10 @@ class InferenceSession:
         fs_out: int | None = None,
     ) -> tuple[list[dict], dict | None]:
         """Process remaining buffered samples and end the stream.
+
+        Drains any complete chunks still in the buffer, then handles the
+        tail (residual < ``_chunk_samples``) by zero-padding it to a full
+        STFT chunk and trimming the output to only the valid frames.
 
         Args:
             remaining_waveform: Optional final samples to append before
@@ -397,22 +432,67 @@ class InferenceSession:
         if remaining_waveform is not None:
             drained = self.feed_waveform(remaining_waveform, fs_in=fs_in, fs_out=fs_out)
 
-        _fs_in = fs_in if fs_in is not None else self._fs_in
         _fs_out = fs_out if fs_out is not None else self._fs_out
 
         if self._wav_buffer is None or self._wav_buffer.shape[0] == 0:
             return drained, None
 
-        tail_wav = self._wav_buffer
+        residual = self._wav_buffer
         self._wav_buffer = None
+        residual_samples = residual.shape[0]
 
-        result = self._parent.engine.infer_chunk(
-            tail_wav.unsqueeze(0), fs_in=_fs_in, fs_out=_fs_out
+        # Zero-pad tail to a full chunk so STFT has a complete window.
+        pad_len = self._chunk_samples - residual_samples
+        if pad_len > 0:
+            tail_chunk = torch.cat(
+                [residual, torch.zeros(pad_len, device=residual.device)], dim=0
+            )
+        else:
+            tail_chunk = residual  # residual is exactly chunk_samples (edge case)
+
+        stft_chunk = self._stft(tail_chunk.unsqueeze(0), cplx=True)  # (1, F, T_chunk)
+        out_cplx = self._parent.engine.infer_stft_chunk(
+            stft_chunk, fs_out=_fs_out
+        )  # (1, F_out, T_chunk)
+
+        # Determine how many STFT frames correspond to actual (non-padded) input.
+        valid_tail_frames = math.ceil(residual_samples / self._frame_hop)
+
+        # Extract body using stitcher (handles first-chunk vs. subsequent-chunk range).
+        is_first_chunk = (self._chunk_idx == 0)
+        body = self._stitcher.add_chunk(
+            out_cplx, self._chunk_idx, accumulate=not self._streaming
         )
-        return drained, result
+        self._chunk_idx += 1
+
+        # Trim body to only the valid (non-zero-padded) output frames.
+        if is_first_chunk:
+            # This chunk is the first (and only) chunk — body spans [0, N_h + N_c).
+            valid_body_frames = min(valid_tail_frames, self._N_h + self._N_c)
+        else:
+            # Subsequent tail — body spans [N_h, N_h + N_c).
+            # The first N_h frames in the STFT chunk are history context.
+            frames_past_history = valid_tail_frames - self._N_h
+            if frames_past_history <= 0:
+                # Residual was entirely within the history context window.
+                valid_body_frames = 0
+            else:
+                valid_body_frames = min(frames_past_history, self._N_c)
+
+        body = body[..., :valid_body_frames]  # trim zero-pad artifacts
+
+        if body.shape[-1] == 0:
+            return drained, None
+
+        out_wav = self._istft(body, cplx=True, squeeze=False)  # (1, L_tail)
+        return drained, {"waveform": out_wav}
 
     def finalize(self) -> dict:
-        """Concatenate overlap-add buffer and return complete enhanced waveform.
+        """Drain buffer and return the complete enhanced waveform.
+
+        Internally calls ``flush()`` to process any remaining samples, then
+        concatenates all accumulated STFT bodies via the stitcher and applies
+        a single global iSTFT.
 
         Only valid in batch (non-streaming) mode.
 
@@ -427,51 +507,26 @@ class InferenceSession:
                 "finalize() is not available in streaming mode. "
                 "Use flush() to end the stream and collect the final chunk."
             )
-        if self._out_buffer is None:
-            return {"waveform": torch.zeros(1, 0)}
 
-        weight = self._weight_buffer.clamp(min=1e-8)
-        out_wav = self._out_buffer / weight
+        # Drain any remaining buffer.
+        self.flush()
 
-        # Trim to expected output length
+        if not self._stitcher.body_list:
+            return {"waveform": torch.zeros(1, 0, device=self._parent.device)}
+
+        # Concatenate all accumulated STFT bodies — no global zero-pad trimming
+        # needed because flush() already trimmed tail frames to valid length.
+        result_cplx = self._stitcher.finalize(dummy_len=0)  # (1, F_out, T_total)
+
+        # Single global iSTFT.
+        out_wav = self._istft(result_cplx, cplx=True, squeeze=False)  # (1, L_raw)
+
+        # Trim to the expected output length (compensates for STFT boundary padding).
         expected_out = int(self._total_input_samples * self._out_ratio)
-        out_wav = out_wav[:expected_out]
+        out_wav = out_wav[:, :expected_out]
 
-        return {"waveform": out_wav.unsqueeze(0).to(self._parent.device)}
+        return {"waveform": out_wav.to(self._parent.device)}
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _ensure_buffers(self, required_len: int) -> None:
-        """Lazily allocate or extend the overlap-add accumulation buffers."""
-        if self._out_buffer is None:
-            buf_len = max(required_len, self._out_chunk_len * 4)
-            self._out_buffer = torch.zeros(buf_len, dtype=torch.float32)
-            self._weight_buffer = torch.zeros(buf_len, dtype=torch.float32)
-        elif self._out_pos + self._out_chunk_len > self._out_buffer.shape[0]:
-            # Extend buffers
-            extra = self._out_chunk_len * 4
-            self._out_buffer = torch.cat(
-                [self._out_buffer, torch.zeros(extra, dtype=torch.float32)]
-            )
-            self._weight_buffer = torch.cat(
-                [self._weight_buffer, torch.zeros(extra, dtype=torch.float32)]
-            )
-
-    def _accumulate(self, chunk: torch.Tensor) -> None:
-        """Overlap-add *chunk* (1-D CPU tensor) into the accumulation buffer."""
-        out_actual_len = min(chunk.shape[0], self._out_chunk_len)
-        end_pos = self._out_pos + out_actual_len
-        self._ensure_buffers(end_pos)
-
-        w = self._fade[:out_actual_len]
-        self._out_buffer[self._out_pos : end_pos] += chunk[:out_actual_len] * w
-        self._weight_buffer[self._out_pos : end_pos] += w
-
-        # Advance write position by hop in output space
-        out_hop = int(self._hop_len * self._out_ratio)
-        self._out_pos += out_hop
 
 
 # ---------------------------------------------------------------------------
