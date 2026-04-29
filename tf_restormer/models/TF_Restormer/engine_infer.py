@@ -329,8 +329,7 @@ class EngineInfer:
         """Return the nearest key in ``self.stft``/``self.istft`` for *fs*.
 
         If *fs* exactly matches an element of ``self.fs_list``, that element
-        is returned as-is.  Otherwise, the element with the smallest absolute
-        difference is returned.
+        is returned as-is.  Otherwise, raises ``ValueError``.
 
         Args:
             fs: Sample rate (Hz) to look up.
@@ -338,11 +337,18 @@ class EngineInfer:
         Returns:
             A key from ``self.fs_list`` (str) suitable for indexing
             ``self.stft`` or ``self.istft``.
+
+        Raises:
+            ValueError: If *fs* is not in ``self.fs_list``.
         """
         key = str(fs)
         if key in self.stft:
             return key
-        return min(self.fs_list, key=lambda k: abs(int(k) - fs))
+        supported = sorted(int(k) for k in self.fs_list)
+        raise ValueError(
+            f"Unsupported sample rate: {fs} Hz. "
+            f"Supported rates: {supported}"
+        )
 
     def _resolve_chunk_config(
         self, css_config: dict | None, fs_in: int

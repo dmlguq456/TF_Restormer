@@ -21,7 +21,8 @@ class Model(torch.nn.Module):
                  encoder_stage: dict,
                  freq_upsampler: dict,
                  decoder_stage: dict,
-                 output_spec:dict):
+                 output_spec: dict,
+                 band_detect: dict | None = None):
         super().__init__()
 
         class TF_stage(torch.nn.Module):
@@ -51,7 +52,14 @@ class Model(torch.nn.Module):
         self.decoder = TF_stage(**decoder_stage, Ekv=Ekv)
         self.estimator = Decoder(**output_spec)
 
-        
+        # Inference-only band detection: trim contiguous near-zero high-freq tail
+        # produced by upsampled (band-limited) inputs, so FreqUpsampleToken can
+        # re-synthesise the high band via learned mask tokens.
+        _bd = band_detect or {}
+        self.band_detect_enable: bool = bool(_bd.get("enable", False))
+        self.band_db_below_peak: float = float(_bd.get("db_below_peak", 60.0))
+
+
     def forward(self, x: torch.Tensor, out_F: int = 961) -> torch.Tensor:
         """Enhance input spectrogram via encoder-upsampler-decoder pipeline.
 
@@ -68,7 +76,12 @@ class Model(torch.nn.Module):
             
         if x.shape[1] > out_F:
             x = x[:, :out_F]  #! Truncate to out_F frequency bins
-            
+
+        if (not self.training) and self.band_detect_enable:
+            F_active = self._detect_active_band(x, self.band_db_below_peak)
+            if F_active < x.shape[1]:
+                x = x[:, :F_active]
+
         if not self.online:
             x, x_scale = self.norm(x)
 
@@ -93,6 +106,31 @@ class Model(torch.nn.Module):
         return y # B, out_F, T, 2
 
     
+    def _detect_active_band(
+        self,
+        x: torch.Tensor,
+        db_below_peak: float,
+        silence_eps: float = 1e-5,
+    ) -> int:
+        """Detect effective bandwidth by finding the highest active frequency bin.
+
+        Returns cutoff F' in [self.up.min_F, F] based on peak-relative threshold.
+        """
+        F = x.shape[1]
+        mag = torch.sqrt(x[..., 0].pow(2) + x[..., 1].pow(2))   # (B, F, T)
+        profile = mag.mean(dim=2).amax(dim=0)                   # (F,)
+        peak = profile.amax()
+        global_mean = profile.mean()
+        if peak < silence_eps * global_mean or global_mean == 0:
+            return self.up.min_F
+        threshold = peak * (10.0 ** (-db_below_peak / 20.0))
+        active = profile > threshold
+        if not active.any():
+            return self.up.min_F
+        cutoff = int(active.nonzero().max().item()) + 1
+        return max(self.up.min_F, min(cutoff, F))
+
+
     def norm(self, x: torch.Tensor, Xscale: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         if Xscale == None:
             Xabs = torch.sqrt(x[...,0]**2 + x[...,1]**2) # B, T, F

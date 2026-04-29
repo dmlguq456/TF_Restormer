@@ -291,16 +291,23 @@ class InferenceSession:
             chunk_sec = css_config.get("chunk_sec", chunk_sec)
             overlap_sec = css_config.get("overlap_sec", overlap_sec)
 
-        # ---- Resolve STFT key via nearest-key fallback (same as engine_infer) ----
+        # ---- Resolve STFT/iSTFT keys (strict — must match fs_list) ----
         stft_key = str(self._fs_in)
         if stft_key not in engine.stft:
-            stft_key = min(engine.fs_list, key=lambda k: abs(int(k) - self._fs_in))
+            supported = sorted(int(k) for k in engine.fs_list)
+            raise ValueError(
+                f"Unsupported input sample rate: {self._fs_in} Hz. "
+                f"Supported rates: {supported}"
+            )
 
-        # ---- STFT / iSTFT references ----
         self._stft = engine.stft[stft_key]
         istft_key = str(self._fs_out)
         if istft_key not in engine.istft:
-            istft_key = min(engine.fs_list, key=lambda k: abs(int(k) - self._fs_out))
+            supported = sorted(int(k) for k in engine.fs_list)
+            raise ValueError(
+                f"Unsupported output sample rate: {self._fs_out} Hz. "
+                f"Supported rates: {supported}"
+            )
         self._istft = engine.istft[istft_key]
 
         # ---- Frame dimensions from STFT object ----
@@ -958,11 +965,13 @@ class SEInference(_BaseInference):
         # ── out_F computation (mirrors engine_infer.py L118-121) ─────────
         out_F = int(self.engine.frame_length * int(_fs_out) / 1000) // 2 + 1
 
-        # ── iSTFT key selection with nearest-key fallback ────────────────
+        # ── iSTFT key selection (strict — must match fs_list) ────────────
         istft_key = str(_fs_out)
         if istft_key not in self.engine.istft:
-            istft_key = min(
-                self.engine.fs_list, key=lambda k: abs(int(k) - _fs_out)
+            supported = sorted(int(k) for k in self.engine.fs_list)
+            raise ValueError(
+                f"Unsupported output sample rate: {_fs_out} Hz. "
+                f"Supported rates: {supported}"
             )
 
         # ── Model forward (inside inference_mode context) ─────────────────
