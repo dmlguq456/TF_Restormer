@@ -64,12 +64,12 @@ model = SEInference.from_pretrained(
     device="cuda",
 )
 
-# Restore a file
-result = model.process_file("noisy.wav", output_path="restored.wav")
+# Restore a file (input should be at its native sample rate, e.g. 16 kHz)
+result = model.process_file("noisy_16k.wav", output_path="restored.wav")
 # result["waveform"]    -> (1, L) tensor at 48 kHz
 # result["sample_rate"] -> 48000
 
-# Or restore a waveform tensor directly
+# Or restore a waveform tensor directly (16 kHz input → 48 kHz output)
 import torch
 waveform = torch.randn(1, 16000)  # (1, L) at 16 kHz
 result = model.process_waveform(waveform)
@@ -93,10 +93,12 @@ python run.py --model TF_Restormer --engine_mode infer --config baseline.yaml \
 
 Pretrained checkpoints will be available on [Hugging Face Hub](https://huggingface.co/shinuh) soon.
 
-| Model | Repo ID | Description |
-|---|---|---|
-| Offline | `shinuh/tf-restormer-baseline` | Non-causal, attention-based |
-| Online | `shinuh/tf-restormer-streaming` | Mamba SSM, causal streaming |
+| Model | Repo ID | Input | Output | Description |
+|---|---|---|---|---|
+| Offline | `shinuh/tf-restormer-baseline` | 16 kHz | 48 kHz | Non-causal, attention-based |
+| Online | `shinuh/tf-restormer-streaming` | 16 kHz | 48 kHz | Mamba SSM, causal streaming |
+
+> **Important**: Input audio must be at its **native sample rate** (e.g., 16 kHz). Do **not** upsample before feeding to the model — the model internally handles bandwidth extension from the input rate to 48 kHz. Feeding pre-upsampled audio (e.g., 16 kHz content resampled to 48 kHz) will bypass frequency extension and produce output with no content above the original Nyquist frequency.
 
 ## Examples
 
@@ -140,11 +142,13 @@ Single-call APIs that consume the whole input at once. The three `process_*` met
 #### Level 1: File I/O (`process_file`)
 
 ```python
-# Loads audio, resamples to 16 kHz if needed, runs inference, saves result
-result = model.process_file("noisy.wav", output_path="restored.wav")
+# Loads audio at native sample rate, resamples to model input rate, restores, saves result
+result = model.process_file("noisy_16k.wav", output_path="restored.wav")
 # result["waveform"]    -> (1, L) tensor at 48 kHz
 # result["sample_rate"] -> 48000
 ```
+
+> Input files should be at their **native sample rate** (not pre-upsampled). The model handles bandwidth extension internally.
 
 #### Level 2: Waveform Tensor (`process_waveform`)
 
