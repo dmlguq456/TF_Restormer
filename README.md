@@ -75,7 +75,7 @@ waveform = torch.randn(1, 16000)  # (1, L) at 16 kHz
 result = model.process_waveform(waveform)
 ```
 
-For STFT-domain I/O or chunked processing, see the [Library API](#library-api) section below.
+For STFT-domain I/O, chunk-by-chunk streaming, or session-based processing, see the [Library API](#library-api) section below.
 
 ### CLI
 
@@ -174,26 +174,62 @@ result = model.process_stft(stft_input)
 out_wav = model.get_istft(48000)(result["stft_out"], cplx=True, squeeze=True)
 ```
 
-### Long Audio Processing
+### Session-based Processing (`create_session`)
 
-For audio longer than a few seconds, `process_waveform` automatically switches to chunked overlap-add processing. You can control this explicitly:
+For chunk-by-chunk control — supports both batch accumulation and real-time streaming patterns. The session handles STFT-domain chunking with context windows (history + future frames around each body), producing higher-quality chunk boundaries than naive waveform-level overlap-add.
+
+#### Batch (manual chunking with overlap-add)
 
 ```python
-# Auto mode (default): single-pass for short, chunked for long audio
-result = model.process_waveform(waveform)
+session = model.create_session(streaming=False)
 
-# Force chunked overlap-add (useful for memory-constrained environments)
-result = model.process_waveform(waveform, mode="css")
+# Feed waveform in arbitrary-sized pieces
+for chunk in audio_chunks:
+    session.feed_waveform(chunk)
 
-# Custom chunk/overlap settings
-result = model.process_waveform(
-    waveform,
-    mode="css",
+# Get the complete overlap-add result
+result = session.finalize()
+# result["waveform"] -> (1, L_out) full enhanced waveform
+```
+
+#### Waveform Streaming
+
+Feed raw PCM samples and receive enhanced chunks immediately.
+
+```python
+session = model.create_session(streaming=True)
+
+while stream_in.is_active():
+    waveform = stream_in.read(read_size)
+    results = session.feed_waveform(waveform)
+    for r in results:
+        stream_out.write(r["waveform"])  # (1, L_chunk) enhanced chunk
+
+# Flush remaining buffered samples
+drained, tail = session.flush()
+for r in drained:
+    stream_out.write(r["waveform"])
+if tail is not None:
+    stream_out.write(tail["waveform"])
+```
+
+#### Custom chunk/overlap configuration
+
+```python
+# Seconds-based (auto-converted to STFT frames)
+session = model.create_session(
+    streaming=True,
     css_config={"chunk_sec": 4.0, "overlap_sec": 0.5},
+)
+
+# Or direct STFT-frame control
+session = model.create_session(
+    streaming=True,
+    css_config={"N_h": 25, "N_c": 150, "N_f": 25},
 )
 ```
 
-> **Note**: Chunked processing applies overlap-add with fade windows at chunk boundaries. Each chunk is processed independently — there is no cross-chunk state carry-over.
+> **Note**: Each chunk is processed with N_h history and N_f future context frames in the STFT domain. Boundary blending uses fade-in/out on spectral frames, not waveform-level windows.
 
 ## Training & Evaluation
 
