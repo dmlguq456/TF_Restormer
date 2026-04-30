@@ -1,4 +1,4 @@
-# TF-Restormer for Speech Restoration
+# TF-Restormer for Speech Restoration (ICML 2026)
 
 Time-Frequency domain Restormer for speech restoration.
 [[Paper (arXiv)]](https://arxiv.org/abs/2509.21003) [[Demo]](https://tf-restormer.github.io/demo/)
