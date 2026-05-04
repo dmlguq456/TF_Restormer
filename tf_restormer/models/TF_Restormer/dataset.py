@@ -578,6 +578,12 @@ class EvalDataset(Dataset):
         noisy_dir = expand_env_vars(dataset_config['noisy_dir'])
         clean_dir = expand_env_vars(dataset_config['clean_dir'])
 
+        if noisy_dir is None:
+            raise ValueError(
+                "'noisy_dir' is null. Set it in your YAML testset entry "
+                "(configs/testsets.yaml or inline override) before running eval/infer."
+            )
+
         # noisy_suffix: e.g. "_ch1" for REVERB challenge (filters noisy files by suffix)
         self.noisy_suffix = dataset_config.get('noisy_suffix', '')
         if self.noisy_suffix:

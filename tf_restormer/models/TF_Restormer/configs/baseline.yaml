@@ -38,8 +38,8 @@ config:
         max_len: 3              # audio length (seconds)
         sample_rate_src: *var_fs_src
         sample_rate_in: *var_fs_in
-        db_root: "/home/DB/VCTK"
-        rir_dir: "/home/DB/DNS_RIR_48k"
+        db_root: null  # set to your VCTK root before training
+        rir_dir: null  # set to your RIR directory before training
         scp_dir: "data/scp/scp_VCTK"
         train:
             spk: "tr_s.scp"
@@ -262,7 +262,7 @@ config:
         max_epoch:
             pretrain: 20
             adversarial: 20
-        gpuid: "1"
+        gpuid: "0"  # edit this YAML field to change GPU (CLI --gpuid is currently ignored)
         clip_norm: 10
         start_scheduling:
             pretrain: 10

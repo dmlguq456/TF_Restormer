@@ -1,5 +1,14 @@
-# Testset catalog — shared across all config variants
-# Update the placeholder paths below to match your local dataset locations.
+# Testset catalog — shared across all config variants.
+# Set clean_dir / noisy_dir to your local dataset paths before running
+# `--engine_mode infer` (Path 2/3) or `--engine_mode eval`. Entries
+# with `null` paths are placeholders; consumers must set them or skip
+# the corresponding testset.
+#
+# WARNING: Selecting a testset_key whose noisy_dir is null will raise
+# TypeError in EvalDataset (dataset.py:587 — os.path.join(None, ...)).
+# Fill noisy_dir before running --engine_mode infer / eval on that key.
+# (clean_dir == null is permitted: dataset.py:592 has a None guard;
+# noisy_dir == null currently does not — fix is out of scope here.)
 
 VCTK_DEMAND: # simple denoising subtask
     metrics: ['pesq', 'stoi', 'lsd', 'sdr', 'mcd',
@@ -7,16 +16,16 @@ VCTK_DEMAND: # simple denoising subtask
               'bleu', 'bertscore', 'tokendist']
     sample_rate_src: 16000
     sample_rate_in: 16000
-    clean_dir: "/home/DB/VCTK_DEMAND/clean_testset_wav"
-    noisy_dir: "/home/DB/VCTK_DEMAND/noisy_testset_wav"
+    clean_dir: null  # set to your local dataset path
+    noisy_dir: null
     random_sample_idx: [10, 20, 30, 40, 50]
 
 VCTK_SR: # simple super-resolution subtask
     metrics: ['lsd', 'mcd', 'utmos']
     sample_rate_src: 44100
     sample_rate_in: 8000
-    clean_dir: "/home/DB/VCTK-Corpus-0.92/test"
-    noisy_dir: "/home/DB/VCTK-Corpus-0.92/test"
+    clean_dir: null  # set to your local dataset path
+    noisy_dir: null
     random_sample_idx: [10, 20, 30, 40, 50]
 
 UNIVERSE: # general speech restoration
@@ -25,72 +34,64 @@ UNIVERSE: # general speech restoration
               'bleu', 'bertscore', 'tokendist']
     sample_rate_src: 16000
     sample_rate_in: 16000
-    clean_dir: "/home/DB/UNIVERSE/target"
-    noisy_dir: "/home/DB/UNIVERSE/input"
+    clean_dir: null  # set to your local dataset path
+    noisy_dir: null
     random_sample_idx: [10, 20, 30, 40, 50]
 
 VoxCeleb: # Real datatest
     metrics: ['wvmos', 'utmos', 'dnsmos']
     sample_rate_src: 16000
-    sample_rate_in: 16000 # None means that the model can process various input sampling rates / # ! Must be none not None.
+    sample_rate_in: 16000
     clean_dir: null
-    noisy_dir: "/home/DB/VoxCeleb_sample_50_SE"
+    noisy_dir: null  # set to your local dataset path
     random_sample_idx: [10, 20, 30, 40, 50]
 
 URGENT2025:
-    # metrics: ['bertscore']
     metrics: ['pesq', 'lsd', 'sdr', 'mcd', 'utmos', 'dnsmos', 'bertscore', 'nisqa']
-    # metrics: ['pesq', 'lsd', 'sdr', 'mcd',
-    #           'wvmos', 'utmos', 'dnsmos',
-    #           'bertscore']
     sample_rate_src: null
     sample_rate_in: null
-    clean_dir: "/home/nas/DB/URGENT2025_nonblind_test/clean"
-    noisy_dir: "/home/nas/DB/URGENT2025_nonblind_test//noisy"  # NOTE: double slash may be a typo
+    clean_dir: null  # set to your local dataset path
+    noisy_dir: null
     random_sample_idx: [10, 20, 30, 40, 50]
 
 URGENT2025_blind:
-    # metrics: ['bertscore']
     metrics: ['utmos', 'dnsmos', 'nisqa']
-    # metrics: ['pesq', 'lsd', 'sdr', 'mcd',
-    #           'wvmos', 'utmos', 'dnsmos',
-    #           'bertscore']
     sample_rate_src: null
     sample_rate_in: null
     clean_dir: null
-    noisy_dir: "/home/nas/DB/URGENT_blind_test/noisy"
+    noisy_dir: null  # set to your local dataset path
     random_sample_idx: [10, 20, 30, 40, 50]
 
 DNS_2020_no_reverb:
     metrics: ['sdr', 'pesq', 'dnsmos', 'dnsmos_sig', 'dnsmos_bak']
     sample_rate_src: 16000
     sample_rate_in: 16000
-    clean_dir: "/home/Uihyeop/nas_Uihyeop/DB/DNS_2020/DNS-Challenge/datasets/test_set/synthetic/no_reverb/clean"
-    noisy_dir: "/home/Uihyeop/nas_Uihyeop/DB/DNS_2020/DNS-Challenge/datasets/test_set/synthetic/no_reverb/noisy_harder"
+    clean_dir: null  # set to your local dataset path
+    noisy_dir: null
     random_sample_idx: [10, 20, 30, 40, 50]
 
 DNS_2020_with_reverb:
     metrics: ['dnsmos', 'dnsmos_sig', 'dnsmos_bak']
     sample_rate_src: 16000
     sample_rate_in: 16000
-    clean_dir: "/home/Uihyeop/nas_Uihyeop/DB/DNS_2020/DNS-Challenge/datasets/test_set/synthetic/with_reverb/clean"
-    noisy_dir: "/home/Uihyeop/nas_Uihyeop/DB/DNS_2020/DNS-Challenge/datasets/test_set/synthetic/with_reverb/noisy"
+    clean_dir: null  # set to your local dataset path
+    noisy_dir: null
     random_sample_idx: [10, 20, 30, 40, 50]
 
 REVERB:
     metrics: ['pesq', 'stoi', 'sdr']
     sample_rate_src: 16000
     sample_rate_in: 16000
-    clean_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_et/data/cln_test"
-    noisy_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_et/data/far_test_noisy"
+    clean_dir: null  # set to your local dataset path
+    noisy_dir: null
     random_sample_idx: [10, 20, 30, 40, 50]
 
 REVERB_et_far:
     metrics: ['pesq', 'stoi', 'sdr']
     sample_rate_src: 16000
     sample_rate_in: 16000
-    clean_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_et/data/cln_test"
-    noisy_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_et/data/far_test"
+    clean_dir: null  # set to your local dataset path
+    noisy_dir: null
     noisy_suffix: "_ch1"
     random_sample_idx: [10, 20, 30, 40, 50]
 
@@ -98,8 +99,8 @@ REVERB_et_near:
     metrics: ['pesq', 'stoi', 'sdr']
     sample_rate_src: 16000
     sample_rate_in: 16000
-    clean_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_et/data/cln_test"
-    noisy_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_et/data/near_test"
+    clean_dir: null  # set to your local dataset path
+    noisy_dir: null
     noisy_suffix: "_ch1"
     random_sample_idx: [10, 20, 30, 40, 50]
 
@@ -107,8 +108,8 @@ REVERB_et_far_hard:
     metrics: ['utmos', 'dnsmos', 'nisqa', 'dnsmos_sig', 'dnsmos_bak']
     sample_rate_src: 16000
     sample_rate_in: 16000
-    clean_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_et/data/cln_test"
-    noisy_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_et/data/far_test_noisy_harder"
+    clean_dir: null  # set to your local dataset path
+    noisy_dir: null
     noisy_suffix: "_ch1"
     random_sample_idx: [10, 20, 30, 40, 50]
 
@@ -116,8 +117,8 @@ REVERB_et_near_hard:
     metrics: ['pesq', 'stoi', 'sdr']
     sample_rate_src: 16000
     sample_rate_in: 16000
-    clean_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_et/data/cln_test"
-    noisy_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_et/data/near_test_noisy_harder"
+    clean_dir: null  # set to your local dataset path
+    noisy_dir: null
     noisy_suffix: "_ch1"
     random_sample_idx: [10, 20, 30, 40, 50]
 
@@ -125,8 +126,8 @@ REVERB_dt_far:
     metrics: ['pesq', 'stoi', 'sdr']
     sample_rate_src: 16000
     sample_rate_in: 16000
-    clean_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_dt/data/cln_test"
-    noisy_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_dt/data/far_test"
+    clean_dir: null  # set to your local dataset path
+    noisy_dir: null
     noisy_suffix: "_ch1"
     random_sample_idx: [10, 20, 30, 40, 50]
 
@@ -134,8 +135,8 @@ REVERB_dt_near:
     metrics: ['pesq', 'stoi', 'sdr']
     sample_rate_src: 16000
     sample_rate_in: 16000
-    clean_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_dt/data/cln_test"
-    noisy_dir: "/home/Uihyeop/nas_Uihyeop/DB/Reverb_challenge/REVERB_WSJCAM0_dt/data/near_test"
+    clean_dir: null  # set to your local dataset path
+    noisy_dir: null
     noisy_suffix: "_ch1"
     random_sample_idx: [10, 20, 30, 40, 50]
 
@@ -144,13 +145,13 @@ REVERB_Real:
     sample_rate_src: 16000
     sample_rate_in: 16000
     clean_dir: null
-    noisy_dir: "/home/nas/DB/REVERB_challenge/MC_WSJ_AV_Eval"
+    noisy_dir: null  # set to your local dataset path
     random_sample_idx: [10, 20, 30, 40, 50]
 
 DNS_Real:
     metrics: ['wvmos', 'utmos', 'dnsmos', 'nisqa', 'dnsmos_sig', 'dnsmos_bak']
     sample_rate_src: 48000
-    sample_rate_in: 16000 # None means that the model can process various input sampling rates / # ! Must be none not None.
+    sample_rate_in: 16000
     clean_dir: null
-    noisy_dir: "/home/Uihyeop/nas_Uihyeop/DB/DNS_Real_Recordings"
+    noisy_dir: null  # set to your local dataset path
     random_sample_idx: [10, 20, 30, 40, 50]

@@ -38,8 +38,8 @@ config:
         max_len: 3
         sample_rate_src: *var_fs_src
         sample_rate_in: *var_fs_in
-        db_root: "/home/DB/VCTK"
-        rir_dir: "/home/DB/DNS_RIR_48k"
+        db_root: null  # set to your VCTK root before training
+        rir_dir: null  # set to your RIR directory before training
         scp_dir: "data/scp/scp_VCTK"
         train:
             spk: "tr_s.scp"
@@ -76,10 +76,8 @@ config:
         input_eval: true
         output_eval: true
         VCTK_SR:
-            clean_dir: "/home/DB/VCTK-Corpus-0.92/wav48_silence_trimmed/test"
-            noisy_dir: "/home/DB/VCTK-Corpus-0.92/wav48_silence_trimmed/test"
-        VoxCeleb:
-            sample_rate_src: 48000
+            clean_dir: null  # set to your VCTK SR test set path before running eval/infer
+            noisy_dir: null  # set to your VCTK SR test set path before running eval/infer
     # ============================== Dataloader ============================ #
     dataloader:
         batch_size: 2
@@ -267,7 +265,7 @@ config:
         max_epoch:
             pretrain: 20
             adversarial: 20
-        gpuid: "1"
+        gpuid: "0"  # edit this YAML field to change GPU (CLI --gpuid is currently ignored)
         clip_norm: 10
         start_scheduling:
             pretrain: 10

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,6 +8,10 @@ version = "0.1.0"
 description = "Time-Frequency Restormer speech enhancement"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Uihyeop Shin", email = "shinuh@mpwav.com"}]
+urls = { Homepage = "https://tf-restormer.github.io/demo/", Repository = "https://github.com/shinuh/TF-Restormer", Documentation = "https://arxiv.org/abs/2509.21003" }
 dependencies = [
     # Core (inference-only)
     "numpy",
@@ -23,12 +27,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cpu = ["torch>=2.6", "torchaudio>=2.6"]
-cu118 = ["torch>=2.6", "torchaudio>=2.6"]
-cu124 = ["torch>=2.6", "torchaudio>=2.6"]
-cu126 = ["torch>=2.6", "torchaudio>=2.6"]
-cu128 = ["torch>=2.6", "torchaudio>=2.6"]
-cu130 = ["torch>=2.6", "torchaudio>=2.6"]
+cpu = ["torch>=2.6,<2.10", "torchaudio>=2.6,<2.10"]
+cu118 = ["torch>=2.6,<2.10", "torchaudio>=2.6,<2.10"]
+cu124 = ["torch>=2.6,<2.10", "torchaudio>=2.6,<2.10"]
+cu126 = ["torch>=2.6,<2.10", "torchaudio>=2.6,<2.10"]
+cu128 = ["torch>=2.6,<2.10", "torchaudio>=2.6,<2.10"]
+cu130 = ["torch>=2.6,<2.10", "torchaudio>=2.6,<2.10"]
 mamba = ["causal-conv1d>=1.5.2", "mamba-ssm>=2.2.5"]
 metrics-intrusive = ["pesq", "pystoi", "mir-eval", "pysptk", "pyworld", "fastdtw", "joblib"]
 metrics-nonintrusive = ["onnxruntime"]
@@ -52,7 +56,7 @@ dev = ["tf-restormer[train]", "pytest"]
 # IMPORTANT: Always combine with an accelerator extra.
 # Correct: uv sync --extra cu124 --extra mamba --extra train
 # Correct: uv sync --extra cu126 --extra mamba --extra train
-full = ["tf-restormer[train,mamba,cu124]"]
+full = ["tf-restormer[train,mamba,cu124,hub]"]
 
 [tool.setuptools.packages.find]
 include = ["tf_restormer*"]

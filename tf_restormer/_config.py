@@ -50,25 +50,30 @@ def resolve_config(variant: str, config_name: str) -> str:
 
 
 def resolve_testsets(variant: str) -> str:
-    """Resolve the testsets.yaml path.
+    """Resolve the package-bundled testsets.yaml path.
 
-    Looks for ``data/testsets.yaml`` relative to the project root
-    (two levels up from this file: ``tf_restormer/_config.py`` → project root).
+    Uses ``importlib.resources`` to locate the file inside the model
+    variant package (mirroring :func:`resolve_config`). Returns a string
+    path that, on editable installs, points to the real filesystem; on
+    wheel installs, the Traversable string may point inside a zip and
+    cannot be opened with plain ``open()``. For wheel support, callers
+    should wrap the load lifecycle in ``importlib.resources.as_file()``.
 
     Args:
-        variant: One of "TF_Restormer" (reserved for future multi-variant support).
+        variant: One of "TF_Restormer".
 
     Returns:
-        Absolute path to ``data/testsets.yaml``.
+        Path string to ``configs/testsets.yaml`` inside the variant package.
 
     Raises:
-        FileNotFoundError: If testsets.yaml does not exist.
+        FileNotFoundError: If testsets.yaml does not exist in the package.
+        KeyError: If ``variant`` is not in ``_VARIANT_MAP``.
     """
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    path = os.path.join(project_root, "data", "testsets.yaml")
-    if not os.path.isfile(path):
-        raise FileNotFoundError(f"testsets.yaml not found at: {path}")
-    return path
+    package = _VARIANT_MAP[variant]
+    ref = importlib.resources.files(package).joinpath("configs", "testsets.yaml")
+    if not ref.is_file():
+        raise FileNotFoundError(f"testsets.yaml not found at: {ref}")
+    return str(ref)
 
 
 def expand_env_vars(value: str | None) -> str | None:
