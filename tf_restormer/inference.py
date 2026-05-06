@@ -423,9 +423,9 @@ class InferenceSession:
             if wav.shape[0] == 1:
                 wav = wav.squeeze(0)              # (1, L) -> (L,)
             elif wav.shape[0] == 2:
-                wav = wav.mean(dim=0)              # auto-fold stereo to mono
+                wav = wav[0]                       # take left channel (matches process_file)
                 logger.warning(
-                    "feed_waveform received stereo (2, L); folded to mono via mean."
+                    "feed_waveform received stereo (2, L); using left channel only."
                 )
             else:
                 raise ValueError(
@@ -956,7 +956,7 @@ class SEInference(_BaseInference):
         Args:
             waveform: Input waveform, shape ``(L,)`` or ``(1, L)``.
             fs_in:    Input sample rate of the provided waveform (Hz). Required.
-            fs_out:   Output sample rate (Hz).  Defaults to ``self._fs_src``
+            fs_out:   Output sample rate (Hz).  Defaults to :attr:`fs_out`
                       (training config output rate, typically 48000).
             **kwargs: Additional options forwarded to
                       :meth:`EngineInfer.infer_session`. Accepted keys:
@@ -1005,9 +1005,9 @@ class SEInference(_BaseInference):
                          ``soundfile``).
             output_path: If provided, write the enhanced waveform to this path.
                          The output sample rate is ``fs_out`` (default:
-                         ``self._fs_src``).
+                         :attr:`fs_out`).
             fs_out:      Desired output sample rate.  Defaults to
-                         ``self._fs_src``.
+                         :attr:`fs_out`.
 
         Returns:
             dict with keys:
@@ -1018,8 +1018,8 @@ class SEInference(_BaseInference):
             import soundfile as sf
         except ImportError:
             raise ImportError(
-                "soundfile is required for process_file(). "
-                "Install with: pip install soundfile"
+                "soundfile is required for process_file().\n"
+                "Install with: uv sync  (or: pip install soundfile)"
             ) from None
 
         input_path = Path(input_path)
@@ -1070,7 +1070,7 @@ class SEInference(_BaseInference):
             fs_in:      Input sample rate used to select the correct STFT
                         key (Hz). Required.
             fs_out:     Output sample rate used to select iSTFT and compute
-                        ``out_F``.  Defaults to ``self._fs_src``.
+                        ``out_F``.  Defaults to :attr:`fs_out`.
 
         Returns:
             dict with keys:
@@ -1147,7 +1147,7 @@ class SEInference(_BaseInference):
         Args:
             fs_in:     Input sample rate for the session (Hz). Required.
             fs_out:    Output sample rate for the session.  Defaults to
-                       ``self._fs_src``.
+                       :attr:`fs_out`.
             streaming: If ``True``, each :meth:`InferenceSession.feed_waveform`
                        call returns enhanced chunks immediately.  If ``False``
                        (batch mode), results accumulate for :meth:`InferenceSession.finalize`.

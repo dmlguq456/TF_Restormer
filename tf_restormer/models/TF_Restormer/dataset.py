@@ -9,17 +9,20 @@ import tempfile
 from glob import glob
 from os.path import relpath
 
-import colorednoise
 import librosa as audio_lib
 import numpy as np
 import scipy.signal as ss
 import soundfile as sf
 import torch
 from loguru import logger
-from pedalboard import Clipping
 from scipy.signal import filtfilt, firwin2
 from torch.utils.data import Dataset, DataLoader
 from torchaudio.functional import resample as torch_resample
+
+# `colorednoise` and `pedalboard` are training-only deps (declared under
+# [train] extra). Importing them at module load would force inference-only
+# users (and pytest collection) to install train deps. Defer the import
+# to the call sites in SynthesisDataset that actually need them.
 
 from tf_restormer.utils import util_dataset
 from tf_restormer.utils.decorators import logger_wraps
@@ -230,6 +233,7 @@ class SynthesisDataset(Dataset):
         return clean + noise + c_noise
 
     def _clipping(self, src):
+        from pedalboard import Clipping  # lazy import — train-only dep
         clipping_level = np.random.randint(*self.clipping_level_range)
         clipping = Clipping(clipping_level)
         srcs = clipping(src, self.fs)
@@ -479,7 +483,8 @@ class SynthesisDataset(Dataset):
         clean_rir, _, scalar = util_dataset.tailor_dB_FS(clean_rir)
         clean *= scalar
 
-        # Generate colored gaussian noise
+        # Generate colored gaussian noise (lazy import — train-only dep)
+        import colorednoise
         c_noise = colorednoise.powerlaw_psd_gaussian(random.uniform(*self.colored_beta_range), int(self.fs*self.dur))
 
         # Low-Pass Fitering

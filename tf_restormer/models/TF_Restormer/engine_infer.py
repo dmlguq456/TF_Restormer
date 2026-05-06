@@ -467,9 +467,9 @@ class EngineInfer:
             if wav.shape[0] == 1:
                 wav = wav.squeeze(0)
             elif wav.shape[0] == 2:
-                wav = wav.mean(dim=0)
+                wav = wav[0]
                 logger.warning(
-                    "_preprocess_waveform received stereo (2, L); folded to mono via mean."
+                    "_preprocess_waveform received stereo (2, L); using left channel only."
                 )
             else:
                 raise ValueError(
