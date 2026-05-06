@@ -33,6 +33,8 @@ pip install -e ".[mamba]"       # + streaming model (Mamba)
 
 > **NOTE**: PyTorch is **not** included — install it separately via [pytorch.org](https://pytorch.org/get-started/locally/) to match your CUDA version.
 
+> **Future**: once published to PyPI, `pip install tf-restormer` (with optional extras `[hub]` / `[mamba]`) will install the package without cloning.
+
 ### Development / CLI (uv)
 
 For training, evaluation, and running `run.py` directly. Uses [uv](https://docs.astral.sh/uv/) for dependency management with conflict-safe PyTorch index routing.
@@ -65,6 +67,7 @@ model = SEInference.from_pretrained(
 )
 
 # Restore a file (fs_in auto-detected from file)
+# `fs_out` is optional — defaults to the model's training output rate (typically 48000).
 result = model.process_file("noisy_16k.wav", output_path="restored.wav", fs_out=48000)
 # result["waveform"]    -> (1, L) tensor at 48 kHz
 # result["sample_rate"] -> 48000
@@ -79,13 +82,15 @@ For STFT-domain I/O, chunk-by-chunk streaming, or session-based processing, see 
 
 ### CLI
 
+> CLI examples below use `uv run`. If you have already activated the venv (`source .venv/bin/activate`), drop the `uv run` prefix.
+
 ```bash
 # Restore a single file
-python run.py --model TF_Restormer --engine_mode infer --config baseline.yaml \
+uv run python run.py --model TF_Restormer --engine_mode infer --config baseline.yaml \
     --input noisy.wav --output restored/
 
 # Restore all files in a directory
-python run.py --model TF_Restormer --engine_mode infer --config baseline.yaml \
+uv run python run.py --model TF_Restormer --engine_mode infer --config baseline.yaml \
     --input noisy_dir/ --output restored/
 ```
 
@@ -110,7 +115,7 @@ See [`library_examples/`](library_examples/) for complete runnable scripts:
 | `batch_inference.py` | Restore all `.wav` files in a directory |
 | `streaming_inference.py` | Chunk-by-chunk streaming inference |
 | `config_override.py` | Override config values; HF Hub loading |
-| `eval_metrics.py` | Compute PESQ/STOI/DNSMOS/NISQA standalone |
+| `eval_metrics.py` | Compute PESQ/STOI/DNSMOS/NISQA standalone (uses `tf_restormer.utils.metrics`) |
 
 ## Library API
 
@@ -143,6 +148,7 @@ Single-call APIs that consume the whole input at once. The three `process_*` met
 
 ```python
 # Loads audio at native sample rate (fs_in auto-detected from file)
+# `fs_out` is optional — defaults to the model's training output rate (typically 48000).
 result = model.process_file("noisy_16k.wav", output_path="restored.wav", fs_out=48000)
 # result["waveform"]    -> (1, L) tensor at 48 kHz
 # result["sample_rate"] -> 48000
@@ -156,6 +162,7 @@ result = model.process_file("noisy_16k.wav", output_path="restored.wav", fs_out=
 import torch
 waveform = torch.randn(1, 16000)  # (1, L) at 16 kHz
 
+# `mode` selects the chunking strategy: 'auto' (default) | 'single_pass' | 'css'
 # fs_in and fs_out — input/output sample rates
 # Auto mode: single-pass for short audio, chunked overlap-add for long audio
 result = model.process_waveform(waveform, fs_in=16000, fs_out=48000)
@@ -180,6 +187,8 @@ result = model.process_stft(stft_input, fs_in=16000, fs_out=48000)
 out_wav = model.get_istft(48000)(result["stft_out"], cplx=True, squeeze=True)
 ```
 
+> **Sample-rate resolution policy**: `process_file`, `process_waveform`, `process_stft`, and `create_session` use **strict** matching against the model's `fs_list` (training-time supported rates) and raise `ValueError` for unsupported rates. The lower-level `get_stft(fs)` / `get_istft(fs)` accessors fall back to the nearest available rate — use them only when you understand the trade-off.
+
 ### Session-based Processing (`create_session`)
 
 For chunk-by-chunk control — supports both batch accumulation and real-time streaming patterns. The session handles STFT-domain chunking with context windows (history + future frames around each body), producing higher-quality chunk boundaries than naive waveform-level overlap-add.
@@ -189,7 +198,8 @@ For chunk-by-chunk control — supports both batch accumulation and real-time st
 ```python
 session = model.create_session(fs_in=16000, fs_out=48000, streaming=False)
 
-# Feed waveform in arbitrary-sized pieces
+# In batch mode, feed_waveform's return value can be ignored; finalize()
+# produces the full reconstructed waveform via the internal stitcher.
 for chunk in audio_chunks:
     session.feed_waveform(chunk)
 
@@ -200,6 +210,8 @@ result = session.finalize()
 
 #### Waveform Streaming
 
+See [`library_examples/streaming_inference.py`](library_examples/streaming_inference.py) for a complete runnable streaming example.
+
 Feed raw PCM samples and receive enhanced chunks immediately.
 
 ```python
@@ -208,6 +220,8 @@ session = model.create_session(fs_in=16000, fs_out=48000, streaming=True)
 
 while stream_in.is_active():
     waveform = stream_in.read(read_size)
+    # In streaming mode, feed_waveform returns list[dict] (each dict has key
+    # "waveform") so chunks can be emitted live without waiting for finalize().
     results = session.feed_waveform(waveform)
     for r in results:
         stream_out.write(r["waveform"])  # (1, L_chunk) enhanced chunk
@@ -229,14 +243,17 @@ session = model.create_session(
     css_config={"chunk_sec": 4.0, "overlap_sec": 0.5},
 )
 
-# Or direct STFT-frame control
-session = model.create_session(
-    streaming=True,
+# Or direct STFT-frame control (frame-form keys are honoured by
+# process_waveform / EngineInfer.infer_session, not by create_session)
+# noisy: (1, L) waveform from earlier example
+result = model.process_waveform(
+    noisy, fs_in=16000, fs_out=48000,
+    mode="css",
     css_config={"N_h": 25, "N_c": 150, "N_f": 25},
 )
 ```
 
-> **Note**: Each chunk is processed with N_h history and N_f future context frames in the STFT domain. Boundary blending uses fade-in/out on spectral frames, not waveform-level windows.
+> **Note**: `create_session` honours only the seconds-form keys (`chunk_sec`, `overlap_sec`) inside `css_config`. The frame-form keys (`N_h`, `N_c`, `N_f`) are accepted by `EngineInfer.infer_session()` (used by `process_waveform`) but are silently ignored by `InferenceSession`. Use `process_waveform(..., mode="css", css_config={"N_h": ..., "N_c": ..., "N_f": ...})` for direct frame-level control. (Code-route fix to wire frame-form keys into `InferenceSession` is tracked separately as P1-8 code-route, OUT OF SCOPE here.)
 
 ## Training & Evaluation
 
@@ -246,9 +263,9 @@ Training requires SCP (script) files that map utterance keys to audio file paths
 
 ```bash
 # Generate SCP files for specific datasets
-python data/create_scp/create_scp_VCTK.py
-python data/create_scp/create_scp_libriTTS_R.py
-python data/create_scp/create_scp_noise.py
+uv run python data/create_scp/create_scp_VCTK.py
+uv run python data/create_scp/create_scp_libriTTS_R.py
+uv run python data/create_scp/create_scp_noise.py
 ```
 
 Before training, set `db_root` and `rir_dir` in
@@ -262,10 +279,14 @@ dataset:
 
 Generated SCP files are saved to `data/scp/` and referenced by training configs.
 
+The `scp_dir` field in the same YAML config (e.g. `data/scp/scp_VCTK`) points to the SCP files generated above.
+
+> **SCP path resolution**: `scp_dir` is resolved **relative to the current working directory** when training/inference is launched. Run `run.py` from the repo root, or set `scp_dir` to an absolute path when invoking from elsewhere (e.g. after `pip install tf-restormer`).
+
 ### Run Training
 
 ```bash
-python run.py --model TF_Restormer --engine_mode train --config baseline.yaml
+uv run python run.py --model TF_Restormer --engine_mode train --config baseline.yaml
 ```
 
 Available configs: `baseline.yaml` (offline), `streaming.yaml` (online/Mamba).
@@ -276,10 +297,14 @@ When `--input` is omitted, inference runs on test sets defined in the config (`d
 
 ```bash
 # Inference on config-defined test sets
-python run.py --model TF_Restormer --engine_mode infer --config baseline.yaml
+uv run python run.py --model TF_Restormer --engine_mode infer --config baseline.yaml
+
+# Optional: redirect dump output to a custom directory
+uv run python run.py --model TF_Restormer --engine_mode infer --config baseline.yaml \
+    --dump_path /path/to/dumps/
 
 # Compute metrics (PESQ, STOI, DNSMOS, etc.)
-python run.py --model TF_Restormer --engine_mode eval --config baseline.yaml
+uv run python run.py --model TF_Restormer --engine_mode eval --config baseline.yaml
 ```
 
 ### Checkpoint Management
@@ -287,18 +312,20 @@ python run.py --model TF_Restormer --engine_mode eval --config baseline.yaml
 Export, upload, and download checkpoints via `tf_restormer/export.py`.
 Requires `uv sync --extra hub` for Hugging Face upload/download.
 
+> **Repo namespace**: the official maintainer publishes under the `shinuh/` HF organisation. When you train and upload your own checkpoints, replace `shinuh/...` with your own HF account or organisation name (e.g., `--repo-id youraccount/tf-restormer-baseline`).
+
 ```bash
 # Export a trained checkpoint (strip optimizer state for deployment)
-python tf_restormer/export.py --config baseline.yaml
+uv run python tf_restormer/export.py --config baseline.yaml
 
 # Upload to Hugging Face Hub
-python tf_restormer/export.py --config baseline.yaml --upload --repo-id shinuh/tf-restormer-baseline
+uv run python tf_restormer/export.py --config baseline.yaml --upload --repo-id shinuh/tf-restormer-baseline
 
 # Upload all locally exported checkpoints
-python tf_restormer/export.py --upload-all
+uv run python tf_restormer/export.py --upload-all
 
 # Download from Hugging Face Hub
-python tf_restormer/export.py --download --repo-id shinuh/tf-restormer-baseline
+uv run python tf_restormer/export.py --download --repo-id shinuh/tf-restormer-baseline
 ```
 
 ## Project Structure
@@ -330,7 +357,7 @@ If you use TF-Restormer in your research, please cite:
 ```bibtex
 @article{tfrestormer2025,
   title   = {Query-Based Asymmetric Modeling with Decoupled Input-Output Rates for Speech Restoration},
-  author  = {},
+  author  = {Shin, Ui-Hyeop and Ko, Jaehyun and Jeong, Woocheol and Park, Hyung-Min},
   journal = {arXiv preprint arXiv:2509.21003},
   year    = {2025},
 }

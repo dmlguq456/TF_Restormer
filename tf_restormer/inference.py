@@ -13,7 +13,8 @@ Waveform-level API::
     # Process a waveform tensor (fs_in is required — native input sample rate)
     import torch
     waveform = torch.randn(1, 16000)  # (1, L) at 16 kHz input
-    result = model.process_waveform(waveform, fs_in=16000)
+    # fs_out is optional — defaults to model's training output rate (typically 48000)
+    result = model.process_waveform(waveform, fs_in=16000, fs_out=48000)
     # result["waveform"] -> (1, L_out) at 48 kHz output
 
     # Process a wav file and optionally save (fs_in is auto-detected from file)
@@ -171,9 +172,8 @@ class _BaseInference:
             from huggingface_hub import hf_hub_download
         except ImportError:
             raise ImportError(
-                "huggingface_hub is required for HF Hub downloads. "
-                "Install with: pip install tf-restormer[hub]  "
-                "or: uv sync --extra hub"
+                "huggingface_hub is required for HF Hub downloads.\n"
+                "Install with: uv sync --extra hub  (or: pip install tf-restormer[hub])"
             ) from None
 
         ckpt_path = Path(hf_hub_download(repo_id=repo_id, filename="model.pt"))
@@ -804,6 +804,13 @@ class SEInference(_BaseInference):
 
         Returns:
             :class:`~tf_restormer.utils.util_stft.STFT` instance.
+
+        Note:
+            Public methods (:meth:`process_file`, :meth:`process_waveform`,
+            :meth:`process_stft`, :meth:`create_session`) use **strict** matching
+            against ``engine.fs_list`` and raise ``ValueError`` for unsupported
+            rates. ``get_stft`` / ``get_istft`` are escape hatches for advanced
+            users who want a transform at any rate.
         """
         key = str(fs)
         if key in self.engine.stft:
@@ -821,6 +828,13 @@ class SEInference(_BaseInference):
 
         Returns:
             :class:`~tf_restormer.utils.util_stft.iSTFT` instance.
+
+        Note:
+            Public methods (:meth:`process_file`, :meth:`process_waveform`,
+            :meth:`process_stft`, :meth:`create_session`) use **strict** matching
+            against ``engine.fs_list`` and raise ``ValueError`` for unsupported
+            rates. ``get_stft`` / ``get_istft`` are escape hatches for advanced
+            users who want a transform at any rate.
         """
         key = str(fs)
         if key in self.engine.istft:
@@ -850,8 +864,25 @@ class SEInference(_BaseInference):
             fs_in:    Input sample rate of the provided waveform (Hz). Required.
             fs_out:   Output sample rate (Hz).  Defaults to ``self._fs_src``
                       (training config output rate, typically 48000).
-            **kwargs: Forwarded to :meth:`EngineInfer.infer_session`
-                      (e.g., ``mode``, ``css_config``, ``show_progress``).
+            **kwargs: Additional options forwarded to
+                      :meth:`EngineInfer.infer_session`. Accepted keys:
+
+                      - ``mode`` (str): ``"auto"`` (default) — choose single-pass
+                        vs. chunked overlap-add (CSS) based on waveform length;
+                        ``"css"`` — always CSS; ``"single_pass"`` — always
+                        single forward pass.
+                      - ``css_config`` (dict): per-call override for chunking
+                        (``chunk_sec``/``overlap_sec`` in seconds, or
+                        ``N_h``/``N_c``/``N_f`` in STFT frames).
+                      - ``show_progress`` (bool): tqdm progress bar.
+
+        Note:
+            In ``mode="auto"``, the single-pass / CSS decision threshold is
+            ``int(self.engine.chunk_sec * fs_in)`` samples — i.e. measured in
+            **input-waveform space**, not STFT frames nor output-rate samples.
+            Audio longer than this threshold is processed via CSS.
+            Example: ``chunk_sec=4.0, fs_in=16000`` → 64000-sample threshold;
+            a 16 kHz waveform longer than 4 seconds takes the CSS path.
 
         Returns:
             dict with key ``"waveform"`` → enhanced tensor, shape ``(1, L_out)``.
@@ -999,9 +1030,13 @@ class SEInference(_BaseInference):
             streaming: If ``True``, each :meth:`InferenceSession.feed_waveform`
                        call returns enhanced chunks immediately.  If ``False``
                        (batch mode), results accumulate for :meth:`InferenceSession.finalize`.
-            css_config: Optional dict to override ``chunk_sec`` / ``overlap_sec``
-                        on the underlying :class:`EngineInfer`.  Applied before
-                        the session reads those values.
+            css_config: Optional dict to override chunking parameters. Only the
+                        seconds-form keys are honoured: ``chunk_sec`` and
+                        ``overlap_sec``. The frame-form keys ``N_h``/``N_c``/``N_f``
+                        are accepted by :meth:`process_waveform` (via
+                        ``EngineInfer.infer_session``) but are silently ignored by
+                        ``InferenceSession``. Pass them through ``process_waveform``
+                        if you need direct frame-level control.
 
         Returns:
             :class:`InferenceSession` instance.

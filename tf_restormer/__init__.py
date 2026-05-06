@@ -12,8 +12,10 @@ def __getattr__(name):
             raise ImportError(
                 "PyTorch is required but not installed. "
                 "Install with an accelerator extra:\n"
+                "  uv sync --extra cu124    # CUDA 12.4\n"
                 "  uv sync --extra cu126    # CUDA 12.6\n"
-                "  uv sync --extra cpu      # CPU-only"
+                "  uv sync --extra cpu      # CPU-only\n"
+                "Or install PyTorch directly: https://pytorch.org/get-started/locally/"
             ) from None
         from tf_restormer.inference import SEInference, InferenceSession
         globals()["SEInference"] = SEInference
