@@ -874,7 +874,7 @@ class SEInference(_BaseInference):
                       - ``css_config`` (dict): per-call override for chunking
                         (``chunk_sec``/``overlap_sec`` in seconds, or
                         ``N_h``/``N_c``/``N_f`` in STFT frames).
-                      - ``show_progress`` (bool): tqdm progress bar.
+                      - ``show_progress`` (bool, default ``False``): tqdm progress bar during CSS chunking.
 
         Note:
             In ``mode="auto"``, the single-pass / CSS decision threshold is

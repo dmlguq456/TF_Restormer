@@ -253,7 +253,7 @@ result = model.process_waveform(
 )
 ```
 
-> **Note**: `create_session` honours only the seconds-form keys (`chunk_sec`, `overlap_sec`) inside `css_config`. The frame-form keys (`N_h`, `N_c`, `N_f`) are accepted by `EngineInfer.infer_session()` (used by `process_waveform`) but are silently ignored by `InferenceSession`. Use `process_waveform(..., mode="css", css_config={"N_h": ..., "N_c": ..., "N_f": ...})` for direct frame-level control. (Code-route fix to wire frame-form keys into `InferenceSession` is tracked separately as P1-8 code-route, OUT OF SCOPE here.)
+> **Note**: `create_session` honours only the seconds-form keys (`chunk_sec`, `overlap_sec`) inside `css_config`. The frame-form keys (`N_h`, `N_c`, `N_f`) are accepted by `EngineInfer.infer_session()` (used by `process_waveform`) but are silently ignored by `InferenceSession`. Use `process_waveform(..., mode="css", css_config={"N_h": ..., "N_c": ..., "N_f": ...})` for direct frame-level control. (Subject to change in a future release — the frame-form keys may be wired into `InferenceSession` directly.)
 
 ## Training & Evaluation
 
@@ -312,7 +312,11 @@ uv run python run.py --model TF_Restormer --engine_mode eval --config baseline.y
 Export, upload, and download checkpoints via `tf_restormer/export.py`.
 Requires `uv sync --extra hub` for Hugging Face upload/download.
 
-> **Repo namespace**: the official maintainer publishes under the `shinuh/` HF organisation. When you train and upload your own checkpoints, replace `shinuh/...` with your own HF account or organisation name (e.g., `--repo-id youraccount/tf-restormer-baseline`).
+> **⚠️ Repo namespace**: the official maintainer publishes under the `shinuh/` HF organisation. When you train and upload your own checkpoints, replace `shinuh/...` with your own HF account or organisation name (e.g., `--repo-id youraccount/tf-restormer-baseline`).
+>
+> **Important caveats**:
+> - `--upload`: **always pass `--repo-id youraccount/...`**. Omitting it auto-generates `shinuh/tf-restormer-<config>` and your token will fail (or, if you happen to have write access to `shinuh/`, the checkpoint publishes under the maintainer's namespace).
+> - `--upload-all`: **does not yet support namespace override** — it always targets `shinuh/...` (tracked as P2-13 code-route fix). Until fixed, upload your own checkpoints individually with `--upload --repo-id youraccount/...`.
 
 ```bash
 # Export a trained checkpoint (strip optimizer state for deployment)
