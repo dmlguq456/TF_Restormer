@@ -28,6 +28,15 @@ _VARIANT_MAP = {
     "TF_Restormer": "tf_restormer.models.TF_Restormer",
 }
 
+# Explicit alias table — exact tokens only. Avoids silent acceptance of
+# typos (e.g. "TFRest_Or_Mer") that a naive separator-stripping rule
+# would canonicalize to the same key as "TF_Restormer".
+_VARIANT_ALIASES: dict[str, str] = {
+    "tf_restormer": "TF_Restormer",
+    "tfrestormer": "TF_Restormer",
+    "tf-restormer": "TF_Restormer",
+}
+
 
 def _normalize_variant(variant: str) -> str:
     """Resolve a case-insensitive variant alias to the canonical key.
@@ -43,23 +52,14 @@ def _normalize_variant(variant: str) -> str:
     Raises:
         KeyError: If no matching entry is found.
     """
-    if variant in _VARIANT_MAP:
-        return variant
-    # Explicit alias table — exact tokens only. Avoids silent acceptance of
-    # typos such as "TFRest_Or_Mer" that a naive separator-stripping rule
-    # would canonicalize to the same key as "TF_Restormer".
-    _VARIANT_ALIASES = {
-        "tf_restormer": "TF_Restormer",
-        "tfrestormer": "TF_Restormer",
-        "tf-restormer": "TF_Restormer",
-        "tf_restormer".upper(): "TF_Restormer",
-        "TFRestormer": "TF_Restormer",
-    }
-    key = _VARIANT_ALIASES.get(variant) or _VARIANT_ALIASES.get(variant.lower())
+    v = variant.strip()  # tolerate trailing/leading whitespace from CLI / shell
+    if v in _VARIANT_MAP:
+        return v
+    key = _VARIANT_ALIASES.get(v.lower())
     if key is None:
         raise KeyError(
-            f"Unknown variant {variant!r}. Allowed aliases: "
-            f"{sorted(set(_VARIANT_ALIASES.values()) | set(_VARIANT_ALIASES.keys()))}"
+            f"Unknown variant {variant!r}. Allowed: "
+            f"{sorted(set(_VARIANT_MAP) | set(_VARIANT_ALIASES))}"
         )
     return key
 
