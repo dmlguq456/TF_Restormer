@@ -183,7 +183,9 @@ class EngineInfer:
         """Enhance a full utterance or recording.
 
         Args:
-            waveform:       1-D or 2-D (1, L) waveform tensor.
+            waveform:       1-D ``(L,)`` or 2-D ``(1, L)`` waveform tensor.
+                            Stereo ``(2, L)`` is folded to mono via mean with a
+                            warning; other multi-channel shapes raise ValueError.
             fs_in:          Input sample rate (Hz).
             fs_out:         Output sample rate (Hz).  Defaults to ``self.fs_src``.
             mode:           ``"auto"``  — choose based on waveform length;
@@ -194,11 +196,14 @@ class EngineInfer:
             show_progress:  Show tqdm progress bar during CSS chunking.
 
         Returns:
-            dict with key ``"waveform"`` → enhanced tensor, shape ``(1, L)``.
+            dict with key ``"waveform"`` → enhanced tensor, shape ``(1, L_out)``,
+            where ``L_out`` is exactly ``int(input_len * fs_out / fs_in)``.
+            Zero-padded on the right if the model produced fewer samples.
         """
         _fs_out = fs_out if fs_out is not None else self.fs_src
 
-        wav = self._preprocess_waveform(waveform)
+        wav = self._preprocess_waveform(waveform)  # 1-D (L,) after Step 3.1
+        expected_out = int(wav.shape[0] * _fs_out / fs_in)
 
         threshold_samples = int(self.chunk_sec * fs_in)
 
@@ -222,6 +227,16 @@ class EngineInfer:
         else:
             result = self._single_pass_session(wav, fs_in=fs_in, fs_out=_fs_out)
             enhanced = result["waveform"]  # (1, L)
+
+        # Trim to expected length (CSS already trims internally → no-op there;
+        # single_pass STFT round-trip may return slightly more samples → trims).
+        enhanced = enhanced[..., :expected_out]
+        # Pad if model returned slightly fewer samples (iSTFT center=True boundary
+        # effects, or _css_session short-clip fallback to _single_pass_session).
+        # This guarantees the public contract: output length == expected_out.
+        if enhanced.shape[-1] < expected_out:
+            pad = expected_out - enhanced.shape[-1]
+            enhanced = torch.nn.functional.pad(enhanced, (0, pad))
 
         return {"waveform": enhanced}
 
@@ -435,15 +450,33 @@ class EngineInfer:
         """Normalize waveform shape and transfer to device.
 
         Ensures consistent (L,) shape and float32 dtype on self.device.
-        SE variant: identity-like — only shape/dtype/device normalization.
+        Accepts mono (L,) or (1, L); folds stereo (2, L) to mono via mean
+        with a warning; raises ValueError for any other shape.
 
         Args:
-            waveform: 1-D (L,) or 2-D (1, L) waveform tensor.
+            waveform: 1-D (L,) or 2-D (1, L) or (2, L) waveform tensor.
 
         Returns:
             Tensor of shape (L,) on self.device with float32 dtype.
+
+        Raises:
+            ValueError: If waveform has more than 2 channels, or dim > 2.
         """
         wav = waveform.to(self.device).to(torch.float32)
         if wav.dim() == 2:
-            wav = wav.squeeze(0)  # (1, L) -> (L,)
+            if wav.shape[0] == 1:
+                wav = wav.squeeze(0)
+            elif wav.shape[0] == 2:
+                wav = wav.mean(dim=0)
+                logger.warning(
+                    "_preprocess_waveform received stereo (2, L); folded to mono via mean."
+                )
+            else:
+                raise ValueError(
+                    f"_preprocess_waveform expects (L,) or (1, L); got shape {tuple(wav.shape)}."
+                )
+        elif wav.dim() != 1:
+            raise ValueError(
+                f"_preprocess_waveform expects 1-D or (1, L); got dim={wav.dim()}."
+            )
         return wav

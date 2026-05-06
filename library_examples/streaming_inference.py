@@ -194,7 +194,7 @@ def main() -> None:
         sys.exit(1)
 
     enhanced = torch.cat(enhanced_parts, dim=0).numpy()
-    out_sr = model._fs_src  # native output sample rate from config (e.g. 48000)
+    out_sr = model.fs_out  # native output sample rate from config (e.g. 48000)
 
     sf.write(args.output, enhanced, out_sr)
     print(f"\nOutput written : {args.output}")

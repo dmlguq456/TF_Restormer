@@ -7,7 +7,14 @@ import random
 import numpy as np
 import torch
 import soundfile as sf
-from torchaudio.io import AudioEffector, CodecConfig
+import pytest
+try:
+    from torchaudio.io import AudioEffector, CodecConfig
+except ImportError:
+    pytest.skip(
+        "torchaudio.io.AudioEffector/CodecConfig unavailable — skipping A/B legacy reference tests",
+        allow_module_level=True,
+    )
 
 # Import new dataset-side implementation
 from tf_restormer.models.TF_Restormer.dataset import SynthesisDataset

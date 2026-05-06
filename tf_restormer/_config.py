@@ -22,18 +22,54 @@ import os
 import re
 
 import yaml
+from loguru import logger
 
 _VARIANT_MAP = {
     "TF_Restormer": "tf_restormer.models.TF_Restormer",
 }
 
 
+def _normalize_variant(variant: str) -> str:
+    """Resolve a case-insensitive variant alias to the canonical key.
+
+    Examples: "tf_restormer", "TF_RESTORMER", "tf-restormer" → "TF_Restormer".
+
+    Args:
+        variant: Any case or separator variant of a supported model name.
+
+    Returns:
+        The canonical key present in ``_VARIANT_MAP``.
+
+    Raises:
+        KeyError: If no matching entry is found.
+    """
+    if variant in _VARIANT_MAP:
+        return variant
+    # Explicit alias table — exact tokens only. Avoids silent acceptance of
+    # typos such as "TFRest_Or_Mer" that a naive separator-stripping rule
+    # would canonicalize to the same key as "TF_Restormer".
+    _VARIANT_ALIASES = {
+        "tf_restormer": "TF_Restormer",
+        "tfrestormer": "TF_Restormer",
+        "tf-restormer": "TF_Restormer",
+        "tf_restormer".upper(): "TF_Restormer",
+        "TFRestormer": "TF_Restormer",
+    }
+    key = _VARIANT_ALIASES.get(variant) or _VARIANT_ALIASES.get(variant.lower())
+    if key is None:
+        raise KeyError(
+            f"Unknown variant {variant!r}. Allowed aliases: "
+            f"{sorted(set(_VARIANT_ALIASES.values()) | set(_VARIANT_ALIASES.keys()))}"
+        )
+    return key
+
+
 def resolve_config(variant: str, config_name: str) -> str:
     """Resolve a config alias to an absolute YAML file path.
 
     Args:
-        variant: One of "TF_Restormer".
-        config_name: YAML filename (e.g. "baseline.yaml").
+        variant: One of "TF_Restormer" (case-insensitive).
+        config_name: YAML filename (e.g. "baseline.yaml") or absolute path.
 
     Returns:
         Absolute path to the YAML config file (valid for editable installs).
@@ -42,10 +78,21 @@ def resolve_config(variant: str, config_name: str) -> str:
         FileNotFoundError: If the config file does not exist.
         KeyError: If variant is not recognized.
     """
+    if os.path.isabs(config_name):
+        if not os.path.isfile(config_name):
+            raise FileNotFoundError(
+                f"Config file not found at absolute path: {config_name!r}"
+            )
+        return config_name
+    variant = _normalize_variant(variant)
     package = _VARIANT_MAP[variant]
     ref = importlib.resources.files(package).joinpath("configs", config_name)
     if not ref.is_file():
-        raise FileNotFoundError(f"Config not found: {variant}/{config_name}")
+        raise FileNotFoundError(
+            f"Config not found in package {package!r}: configs/{config_name}. "
+            "Pass an absolute path or use one of the bundled configs "
+            "(baseline.yaml, streaming.yaml)."
+        )
     return str(ref)
 
 
@@ -69,6 +116,7 @@ def resolve_testsets(variant: str) -> str:
         FileNotFoundError: If testsets.yaml does not exist in the package.
         KeyError: If ``variant`` is not in ``_VARIANT_MAP``.
     """
+    variant = _normalize_variant(variant)
     package = _VARIANT_MAP[variant]
     ref = importlib.resources.files(package).joinpath("configs", "testsets.yaml")
     if not ref.is_file():
@@ -123,6 +171,7 @@ def load_testsets(variant: str) -> dict:
         FileNotFoundError: If testsets.yaml does not exist.
         KeyError: If variant is not recognized.
     """
+    variant = _normalize_variant(variant)
     path = resolve_testsets(variant)
     with open(path, encoding="utf-8") as fh:
         return yaml.safe_load(fh)
@@ -148,6 +197,7 @@ def load_config(variant: str, config_name: str) -> dict:
         ``EvalDataset.__init__`` (Phase 5.7) to avoid crashing training-only runs
         where eval dataset env vars (e.g. ``VCTK_DEMAND_DB_ROOT``) are not set.
     """
+    variant = _normalize_variant(variant)
     if os.path.isabs(config_name) and os.path.isfile(config_name):
         # NOTE: Even with absolute config paths, testsets.yaml is loaded from the
         # package. Inline testset definitions in the config take precedence over
@@ -169,8 +219,14 @@ def load_config(variant: str, config_name: str) -> dict:
 
     try:
         testset_defs = load_testsets(variant)
-    except FileNotFoundError:
-        testset_defs = {}  # No testsets.yaml → assume inline definitions (backward compat)
+    except FileNotFoundError as exc:
+        logger.warning(
+            f"testsets.yaml not found for variant {variant!r}: {exc}. "
+            "Catalog merge skipped — only inline 'dataset_test' entries from "
+            "the config will be available. eval/infer paths that look up "
+            "testset definitions by key will fail with a friendly RuntimeError."
+        )
+        testset_defs = {}
 
     if testset_defs:
         dt = config.setdefault("dataset_test", {})
@@ -190,3 +246,25 @@ def load_config(variant: str, config_name: str) -> dict:
     # runs where eval env vars (VCTK_DEMAND_DB_ROOT etc.) are not set.
 
     return yaml_dict
+
+
+def apply_cli_gpuid(config: dict, args: object) -> None:
+    """If ``--gpuid`` was supplied on the CLI, mutate ``config['engine']['gpuid']``.
+
+    This allows the CLI flag to override whatever is set in the YAML without
+    callers having to duplicate the same two lines in every entry point.
+
+    Args:
+        config: Full experiment config dict (mutated in-place).
+        args:   argparse.Namespace from the CLI (or any object with a
+                ``gpuid`` attribute).  A missing or empty attribute is a no-op.
+    """
+    cli_gpuid = getattr(args, "gpuid", None)
+    if cli_gpuid is None or str(cli_gpuid) == "":
+        return
+    original = config.get("engine", {}).get("gpuid")
+    if original != str(cli_gpuid):
+        logger.info(
+            f"Overriding YAML engine.gpuid={original!r} with CLI --gpuid={cli_gpuid!r}"
+        )
+    config.setdefault("engine", {})["gpuid"] = str(cli_gpuid)

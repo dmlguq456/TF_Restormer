@@ -25,7 +25,12 @@ parser.add_argument(
     "--engine_mode",
     choices=["train", "eval", "infer", "infer_sample"],
     default="train",
-    help="This option is used to chooose the mode")
+    help=(
+        "Operation mode. 'train' / 'eval' / 'infer' are the supported modes. "
+        "'infer_sample' is DEPRECATED — use 'infer --input <file>' instead "
+        "(scheduled for removal in the next major release)."
+    ),
+)
 parser.add_argument(
     "--config",
     type=str,
@@ -59,7 +64,8 @@ if args.engine_mode == "infer_sample":
 from tf_restormer._config import _VARIANT_MAP  # noqa: E402
 if args.model not in _VARIANT_MAP:
     import sys
-    sys.exit(f"Unknown model: {args.model!r}. Choose from: {set(_VARIANT_MAP)}")
+    valid = ", ".join(sorted(_VARIANT_MAP))
+    sys.exit(f"Unknown model: {args.model!r}. Choose from: {valid}")
 
 # ---- Setup model-level file logger before dispatch ----
 _model_dir = os.path.join(

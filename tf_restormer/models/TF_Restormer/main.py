@@ -10,10 +10,12 @@ from tf_restormer.utils.decorators import logger_wraps
 @logger_wraps()
 def main(args):
     """Entry point for TF_Restormer training, evaluation, and inference."""
-    from tf_restormer._config import load_config
+    from tf_restormer._config import apply_cli_gpuid, load_config
     config_name = getattr(args, 'config', 'baseline.yaml')
     yaml_dict = load_config("TF_Restormer", config_name)
     config = yaml_dict["config"]
+
+    apply_cli_gpuid(config, args)
 
     model_e = Model(**config["model"])
     gpuid = tuple(map(int, config["engine"]["gpuid"].split(',')))

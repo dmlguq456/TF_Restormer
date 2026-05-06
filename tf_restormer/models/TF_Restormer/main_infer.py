@@ -35,6 +35,65 @@ from tf_restormer.utils.decorators import logger_wraps
 
 
 # ---------------------------------------------------------------------------
+# Testset config helpers
+# ---------------------------------------------------------------------------
+
+def _require_testset_keys(config: dict) -> object:
+    """Look up ``config['dataset_test']['testset_key']`` with a friendly error on miss.
+
+    Used by all three eval/infer paths (Path 1 eval, Path 2 folder/file infer
+    with no explicit catalog, Path 3 dataloader infer).  Raised as
+    ``RuntimeError`` so the stack trace is interpretable to a CLI user instead
+    of a bare ``KeyError``.
+
+    Args:
+        config: Full experiment config dict.
+
+    Returns:
+        The raw ``testset_key`` value (str or list — callers normalise to list).
+
+    Raises:
+        RuntimeError: If ``testset_key`` is absent from ``config['dataset_test']``.
+    """
+    dataset_test = config.get("dataset_test", {})
+    if "testset_key" not in dataset_test:
+        raise RuntimeError(
+            "config['dataset_test']['testset_key'] is missing. "
+            "Either testsets.yaml was not bundled with the wheel "
+            "(check pyproject [tool.setuptools.package-data]), or "
+            "the user-supplied YAML omits a 'dataset_test.testset_key' field. "
+            f"Available keys in config['dataset_test']: {sorted(dataset_test.keys())}."
+        )
+    return dataset_test["testset_key"]
+
+
+def _require_testset_entry(config: dict, key: str) -> dict:
+    """Look up ``config['dataset_test'][key]`` with a friendly error on miss.
+
+    Args:
+        config: Full experiment config dict.
+        key:    Testset key name to look up.
+
+    Returns:
+        The testset definition dict for *key*.
+
+    Raises:
+        RuntimeError: If *key* is absent or maps to a non-dict value.
+    """
+    dt = config.get("dataset_test", {})
+    if key not in dt or not isinstance(dt[key], dict):
+        available = sorted(k for k, v in dt.items() if isinstance(v, dict))
+        raise RuntimeError(
+            f"Testset definition not found for key {key!r}. "
+            f"Available keys in config['dataset_test']: {available}. "
+            "If you installed via wheel and the catalog is missing, "
+            "check that tf_restormer/models/TF_Restormer/configs/testsets.yaml "
+            "is included in the package data (pyproject [tool.setuptools.package-data])."
+        )
+    return dt[key]
+
+
+# ---------------------------------------------------------------------------
 # Setup helpers
 # ---------------------------------------------------------------------------
 
@@ -272,11 +331,13 @@ def main_infer(args: argparse.Namespace) -> None:
     Config loading follows the same pattern as main.py.
     """
     # ---- Config loading (mirrors main.py) ----
-    from tf_restormer._config import load_config
+    from tf_restormer._config import apply_cli_gpuid, load_config
     config_name = getattr(args, "config", "baseline.yaml")
     yaml_dict = load_config("TF_Restormer", config_name)
     logger.info(f"Using config file: {config_name}")
     config = yaml_dict["config"]
+
+    apply_cli_gpuid(config, args)
 
     # ---- GPU / device ----
     gpuid = tuple(map(int, config["engine"]["gpuid"].split(",")))
@@ -287,13 +348,23 @@ def main_infer(args: argparse.Namespace) -> None:
     # ==================================================================
     if args.engine_mode == "eval":
         from .engine_eval import EngineEval  # lazy: only imported when eval is requested
-        testset_keys = config["dataset_test"]["testset_key"]
-        if isinstance(testset_keys, str):
-            testset_keys = [testset_keys]
+        testset_keys = _require_testset_keys(config)
+        testset_keys_iter = testset_keys if not isinstance(testset_keys, str) else [testset_keys]
+
+        # Pre-loop sanity check: ensure every named key has a definition dict.
+        # This surfaces a friendly RuntimeError rather than a bare KeyError deep
+        # inside EngineEval when a user typo'd a key in the YAML.
+        dataset_test = config.get("dataset_test", {})
+        missing = [k for k in testset_keys_iter if k not in dataset_test]
+        if missing:
+            raise RuntimeError(
+                f"testset_keys reference undefined entries in config['dataset_test']: {missing}. "
+                f"Available keys: {sorted(k for k in dataset_test if isinstance(dataset_test[k], dict))}."
+            )
 
         model_e = Model(**config["model"])
 
-        for i, key in enumerate(testset_keys):
+        for i, key in enumerate(testset_keys_iter):
             logger.info(f"===== [{i+1}/{len(testset_keys)}] testset_key: \"{key}\" =====")
             config["dataset_test"]["testset_key"] = key
             dataloaders = get_dataloaders(
@@ -315,12 +386,9 @@ def main_infer(args: argparse.Namespace) -> None:
     input_path = getattr(args, "input", None)
     if input_path:
         # Resolve sample rates from config (use first testset_key)
-        testset_keys = config["dataset_test"]["testset_key"]
-        if isinstance(testset_keys, list):
-            first_key = testset_keys[0]
-        else:
-            first_key = testset_keys
-        fs_src = config["dataset_test"][first_key]["sample_rate_src"]
+        testset_keys = _require_testset_keys(config)
+        first_key = list(testset_keys)[0] if not isinstance(testset_keys, str) else testset_keys
+        fs_src = _require_testset_entry(config, first_key)["sample_rate_src"]
 
         output_path = getattr(args, "output", None) or os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "inference_wav", "folder_output"
@@ -341,9 +409,8 @@ def main_infer(args: argparse.Namespace) -> None:
     # Model is created once and reused; EngineInfer is recreated per key
     # (cheap: no weights re-loaded, only STFT keys differ if fs changes)
     # ==================================================================
-    testset_keys = config["dataset_test"]["testset_key"]
-    if isinstance(testset_keys, str):
-        testset_keys = [testset_keys]
+    testset_keys = _require_testset_keys(config)
+    testset_keys_iter = testset_keys if not isinstance(testset_keys, str) else [testset_keys]
 
     # Build model once outside the loop
     model_e = Model(**config["model"])
@@ -359,12 +426,13 @@ def main_infer(args: argparse.Namespace) -> None:
     )
     model_e = model_e.to(device)
 
-    for i, key in enumerate(testset_keys):
-        logger.info(f"===== [{i+1}/{len(testset_keys)}] testset_key: \"{key}\" =====")
+    for i, key in enumerate(testset_keys_iter):
+        logger.info(f"===== [{i+1}/{len(testset_keys_iter)}] testset_key: \"{key}\" =====")
         config["dataset_test"]["testset_key"] = key
 
-        fs_src = config["dataset_test"][key]["sample_rate_src"]
-        fs_in_label = config["dataset_test"][key]["sample_rate_in"]
+        testset_entry = _require_testset_entry(config, key)
+        fs_src = testset_entry["sample_rate_src"]
+        fs_in_label = testset_entry["sample_rate_in"]
 
         dataloaders = get_dataloaders(
             args,

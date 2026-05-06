@@ -103,7 +103,7 @@ def main() -> None:
         output_path=args.output,
     )
 
-    out_sr = result.get("sample_rate", model._fs_src)
+    out_sr = result.get("sample_rate", model.fs_out)
     out_len_sec = result["waveform"].shape[-1] / out_sr
     print(f"Output written : {args.output}")
     print(f"Output rate    : {out_sr} Hz")

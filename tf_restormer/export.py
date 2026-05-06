@@ -22,13 +22,13 @@ CLI usage::
     python tf_restormer/export.py --config baseline.yaml
 
     # Export and upload to HF Hub
-    python tf_restormer/export.py --config baseline.yaml --upload --repo-id shinuh/tf-restormer-baseline
+    python tf_restormer/export.py --config baseline.yaml --upload --repo-id <owner>/tf-restormer-baseline
 
     # Upload all locally exported checkpoints
     python tf_restormer/export.py --upload-all
 
     # Download from HF Hub
-    python tf_restormer/export.py --download --config baseline.yaml --repo-id shinuh/tf-restormer-baseline
+    python tf_restormer/export.py --download --config baseline.yaml --repo-id <owner>/tf-restormer-baseline
 
 Library usage::
 
@@ -55,6 +55,91 @@ _DEFAULT_CKPT_HOME = Path(__file__).resolve().parent / "checkpoints"
 
 # TF_Restormer is a single-variant project, but the map is kept for extensibility.
 _SUPPORTED_VARIANTS = set(_VARIANT_MAP.keys())  # {"TF_Restormer"}
+
+
+def _resolve_hf_namespace(repo_id: str | None, token: str | None = None) -> str:
+    """Return the HF Hub namespace to publish under.
+
+    Args:
+        repo_id: Caller-supplied repo path.  MUST be in ``"owner/name"`` form
+            if provided (a value without "/" is treated as missing and triggers
+            whoami fallback).
+        token:   Explicit HF token.  ``None`` uses the cached login.
+
+    Priority:
+      1. ``repo_id`` containing "/"  → returned verbatim (owner/name).
+      2. ``HfApi(token).whoami()``  → ``info["name"]``, else first org name.
+      3. Friendly error — never silently falls back to a hardcoded namespace.
+
+    Raises:
+        ImportError: ``huggingface_hub`` is not installed.
+        RuntimeError: whoami() failed (no token / invalid token / no network),
+            or whoami succeeded but returned no usable namespace.
+    """
+    if repo_id is not None and "/" in repo_id:
+        return repo_id  # caller supplied owner/name verbatim
+
+    try:
+        from huggingface_hub import HfApi
+    except ImportError as exc:
+        raise ImportError(
+            "huggingface_hub is required for HF namespace resolution. "
+            "Install with: uv sync --extra hub"
+        ) from exc
+
+    # Import specific exception classes lazily — older huggingface_hub
+    # builds (<0.16) may not expose LocalTokenNotFoundError.  Fallback
+    # sentinel classes ensure each ``except`` clause references a real class.
+    try:
+        from huggingface_hub.utils import (  # type: ignore[attr-defined]
+            LocalTokenNotFoundError,
+            HfHubHTTPError,
+        )
+    except ImportError:
+        class LocalTokenNotFoundError(Exception):  # type: ignore[no-redef]
+            """Sentinel: huggingface_hub too old to expose LocalTokenNotFoundError."""
+
+        class HfHubHTTPError(Exception):  # type: ignore[no-redef]
+            """Sentinel: huggingface_hub too old to expose HfHubHTTPError."""
+
+    try:
+        info = HfApi(token=token).whoami()
+    except LocalTokenNotFoundError as exc:
+        raise RuntimeError(
+            "No Hugging Face token found.  Run `huggingface-cli login` "
+            "or pass --repo-id explicitly (owner/name form)."
+        ) from exc
+    except HfHubHTTPError as exc:
+        raise RuntimeError(
+            f"HF Hub rejected whoami() ({exc}).  The cached token may be "
+            "invalid or expired.  Re-run `huggingface-cli login`, or pass "
+            "--repo-id explicitly (owner/name form)."
+        ) from exc
+    except ConnectionError as exc:
+        # builtin ConnectionError; requests.exceptions.ConnectionError is a
+        # subclass, so this covers both stdlib socket errors and
+        # huggingface_hub's underlying urllib3/requests network failures.
+        raise RuntimeError(
+            f"Cannot reach huggingface.co for whoami() ({exc}).  "
+            "Check your network or pass --repo-id explicitly."
+        ) from exc
+
+    name = info.get("name")
+    if not name:
+        orgs = info.get("orgs") or []
+        if orgs:
+            name = orgs[0].get("name")
+    if not name:
+        raise RuntimeError(
+            "HfApi.whoami() returned no usable namespace "
+            f"(keys: {sorted(info.keys())}).  Pass --repo-id explicitly."
+        )
+
+    logger.info(
+        f"Resolved HF namespace via whoami(): {name!r}.  "
+        "Override with --repo-id if this is the wrong account/org."
+    )
+    return name
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +359,7 @@ def upload_to_hub(
     Args:
         config_name: Config filename, e.g. ``"baseline.yaml"``.
         repo_id:     HF repo ID.  Auto-generated as
-                     ``shinuh/tf-restormer-{config-slug}`` if ``None``.
+                     ``<whoami>/tf-restormer-{config-slug}`` if ``None``.
         variant:     Model variant key (default ``"TF_Restormer"``).
         private:     Create a private repo (default ``True``).
         token:       HF API token.  Uses the cached token when ``None``.
@@ -321,10 +406,27 @@ def upload_to_hub(
     # Resolve config YAML
     yaml_path = resolve_config(variant, config_name)
 
-    # Auto-generate repo_id
+    # Resolve repo_id — always route through the helper so that:
+    #   - None           → whoami namespace + auto-slug
+    #   - "bare-name"    → whoami namespace + bare-name
+    #   - "owner/name"   → returned verbatim (helper early-returns)
     if repo_id is None:
+        ns = _resolve_hf_namespace(repo_id=None, token=token)
         slug = config_stem.lower().replace("_", "-")
-        repo_id = f"shinuh/tf-restormer-{slug}"
+        repo_id = f"{ns}/tf-restormer-{slug}"
+        logger.warning(
+            f"No --repo-id given; resolved to {repo_id!r} via HF whoami(). "
+            "If this is not your intended target, abort and pass --repo-id owner/name explicitly."
+        )
+    elif "/" not in repo_id:
+        bare_name = repo_id
+        ns = _resolve_hf_namespace(repo_id=None, token=token)
+        repo_id = f"{ns}/{bare_name}"
+        logger.warning(
+            f"--repo-id={bare_name!r} had no namespace; resolved to {repo_id!r} via HF whoami(). "
+            "If this is not your intended target, abort and pass --repo-id owner/name explicitly."
+        )
+    # else: repo_id already contains "/" → use verbatim.
 
     # Upload
     api = HfApi(token=token)
@@ -377,6 +479,14 @@ def upload_all(
         logger.info("No checkpoints directory found; nothing to upload.")
         return results
 
+    # Resolve the HF namespace once so every per-config upload uses the same
+    # owner (avoids N redundant whoami() round-trips).
+    try:
+        ns = _resolve_hf_namespace(repo_id=None, token=token)
+    except (RuntimeError, ImportError) as exc:
+        logger.error(f"Cannot resolve HF namespace: {exc}")
+        return results
+
     for config_dir in sorted(ckpt_root.iterdir()):
         if not config_dir.is_dir():
             continue
@@ -387,11 +497,14 @@ def upload_all(
         config_name = config_dir.name + ".yaml"
         config_stem = config_dir.name
         slug = config_stem.lower().replace("_", "-")
-        auto_repo_id = f"shinuh/tf-restormer-{slug}"
+        auto_repo_id = f"{ns}/tf-restormer-{slug}"
 
         try:
+            # Pass auto_repo_id explicitly so upload_to_hub does not re-resolve
+            # the namespace via whoami() (saves N extra network round-trips).
             url = upload_to_hub(
                 config_name=config_name,
+                repo_id=auto_repo_id,
                 variant=variant,
                 private=private,
                 token=token,
@@ -420,7 +533,7 @@ def download_from_hub(
     repo and copies them to ``tf_restormer/checkpoints/{config_stem}/``.
 
     Args:
-        repo_id:     HF repo ID, e.g. ``"shinuh/tf-restormer-baseline"``.
+        repo_id:     HF repo ID, e.g. ``"<owner>/tf-restormer-baseline"``.
         config_name: Config filename for local storage path.  When ``None``,
                      the config stem is inferred from the last segment of
                      *repo_id* (e.g. ``"tf-restormer-baseline"`` →
@@ -507,19 +620,17 @@ if __name__ == "__main__":
             "  # Export latest checkpoint\n"
             "  python tf_restormer/export.py --config baseline.yaml\n"
             "\n"
-            "  # Export then upload to HF Hub (auto-generate repo ID)\n"
+            "Upload examples (--repo-id is optional; namespace auto-derived via whoami):\n"
             "  python tf_restormer/export.py --config baseline.yaml --upload\n"
-            "\n"
-            "  # Export then upload to a specific repo\n"
             "  python tf_restormer/export.py --config baseline.yaml --upload"
-            " --repo-id shinuh/tf-restormer-baseline\n"
+            " --repo-id <owner>/tf-restormer-baseline\n"
             "\n"
             "  # Upload all locally exported checkpoints to HF Hub\n"
             "  python tf_restormer/export.py --upload-all\n"
             "\n"
-            "  # Download from HF Hub\n"
+            "Download examples (--repo-id is REQUIRED):\n"
             "  python tf_restormer/export.py --download"
-            " --repo-id shinuh/tf-restormer-baseline\n"
+            " --repo-id <owner>/tf-restormer-baseline\n"
         ),
     )
     parser.add_argument(
@@ -541,11 +652,6 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
-        "--export",
-        action="store_true",
-        help="Export the latest checkpoint (default action when no flag is given).",
-    )
-    parser.add_argument(
         "--upload",
         action="store_true",
         help="Export checkpoint then upload to Hugging Face Hub.",
@@ -565,8 +671,11 @@ if __name__ == "__main__":
         default=None,
         metavar="REPO_ID",
         help=(
-            "HF repo ID for upload/download "
-            "(auto-generated as 'shinuh/tf-restormer-{config-slug}' if omitted)."
+            "HF Hub repo ID in 'owner/name' form.  "
+            "For --upload: optional — omit to auto-derive namespace via whoami(); "
+            "a slash-less value (e.g. 'myrepo') is treated as a bare name and "
+            "prefixed with the whoami namespace.  "
+            "For --download: REQUIRED."
         ),
     )
     parser.add_argument(
@@ -586,10 +695,12 @@ if __name__ == "__main__":
         upload_all(private=not cli_args.public, force=cli_args.force)
 
     elif cli_args.download:
-        if cli_args.repo_id is None and cli_args.config is None:
-            parser.error("--download requires at least one of --repo-id or --config")
+        if cli_args.repo_id is None:
+            parser.error(
+                "--download requires --repo-id (e.g. --repo-id owner/repo)"
+            )
         result = download_from_hub(
-            repo_id=cli_args.repo_id or "",
+            repo_id=cli_args.repo_id,
             config_name=cli_args.config,
             output_dir=cli_args.output,
         )

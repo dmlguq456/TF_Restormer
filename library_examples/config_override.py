@@ -99,13 +99,18 @@ def pattern3_dict_override() -> None:
     # Load the full YAML dict (the outer wrapper that contains "config" key)
     yaml_dict = load_config("TF_Restormer", "baseline.yaml")
 
-    # Inspect current value
-    current_val = yaml_dict["config"]["model"].get("num_blocks", "<not set>")
-    print(f"  Original model.num_blocks = {current_val}")
+    # Inspect current value (encoder_stage lives under config["model"])
+    current_val = (
+        yaml_dict["config"]["model"]
+        .get("encoder_stage", {})
+        .get("num_repeat", "<not set>")
+    )
+    print(f"  Original model.encoder_stage.num_repeat = {current_val}")
 
     # --- Sub-form A: mutate the full yaml_dict and pass it ---
-    yaml_dict["config"]["model"]["num_blocks"] = 2  # example override
-    print("  Modified model.num_blocks = 2")
+    yaml_dict["config"]["model"].setdefault("encoder_stage", {})
+    yaml_dict["config"]["model"]["encoder_stage"]["num_repeat"] = 2  # default 6
+    print("  Modified model.encoder_stage.num_repeat = 2")
 
     # Actual call (requires checkpoint):
     #

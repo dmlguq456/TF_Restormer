@@ -176,7 +176,30 @@ class _BaseInference:
                 "Install with: uv sync --extra hub  (or: pip install tf-restormer[hub])"
             ) from None
 
-        ckpt_path = Path(hf_hub_download(repo_id=repo_id, filename="model.pt"))
+        # Import specialized hub exception types; define inert sentinels for
+        # very old huggingface_hub versions that do not export them.
+        try:
+            from huggingface_hub.utils import (
+                RepositoryNotFoundError as _RepoNotFound,
+                HfHubHTTPError as _HubHTTP,
+            )
+        except ImportError:
+            class _RepoNotFound(Exception):  # type: ignore[no-redef]
+                """Sentinel: huggingface_hub too old to provide RepositoryNotFoundError."""
+            class _HubHTTP(Exception):  # type: ignore[no-redef]
+                """Sentinel: huggingface_hub too old to provide HfHubHTTPError."""
+
+        try:
+            ckpt_path = Path(hf_hub_download(repo_id=repo_id, filename="model.pt"))
+        except _RepoNotFound as exc:
+            raise RuntimeError(
+                f"HF Hub repo not found: {repo_id!r}. "
+                "Verify the repo ID and your access permissions."
+            ) from exc
+        except _HubHTTP as exc:
+            raise RuntimeError(
+                f"HF Hub HTTP error while downloading {repo_id}/model.pt: {exc}"
+            ) from exc
         logger.info(f"Downloaded checkpoint from HF Hub: {repo_id}/model.pt -> {ckpt_path}")
 
         # Download config from repo if user did not provide a config that already
@@ -187,8 +210,18 @@ class _BaseInference:
             and not Path(config).is_file()
         )
         if need_config:
-            config = str(Path(hf_hub_download(repo_id=repo_id, filename="config.yaml")))
-            logger.info(f"Downloaded config from HF Hub: {repo_id}/config.yaml -> {config}")
+            try:
+                config = str(Path(hf_hub_download(repo_id=repo_id, filename="config.yaml")))
+                logger.info(f"Downloaded config from HF Hub: {repo_id}/config.yaml -> {config}")
+            except (_RepoNotFound, _HubHTTP, Exception) as exc:
+                # Refusing to silently fall back to a packaged default config
+                # would let the wrong architecture be paired with the
+                # downloaded weights.  Force the user to make the choice.
+                raise RuntimeError(
+                    f"HF Hub checkpoint {repo_id!r} requires config.yaml but it could "
+                    f"not be downloaded ({type(exc).__name__}: {exc}). Pass an explicit "
+                    "local config= path if you intend to override the repo's config."
+                ) from exc
 
         return ckpt_path, config
 
@@ -378,10 +411,32 @@ class InferenceSession:
             key ``"waveform"`` → ``(1, L_out)`` enhanced tensor.
         """
         _fs_out = fs_out if fs_out is not None else self._fs_out
+        if _fs_out != self._fs_out:
+            raise ValueError(
+                f"InferenceSession.feed_waveform fs_out={_fs_out} differs from "
+                f"session fs_out={self._fs_out}. Per-call fs_out override is not "
+                f"supported; create a new session for a different output rate."
+            )
 
         wav = waveform.to(self._parent.device).to(torch.float32)
         if wav.dim() == 2:
-            wav = wav.squeeze(0)  # (1, L) -> (L,)
+            if wav.shape[0] == 1:
+                wav = wav.squeeze(0)              # (1, L) -> (L,)
+            elif wav.shape[0] == 2:
+                wav = wav.mean(dim=0)              # auto-fold stereo to mono
+                logger.warning(
+                    "feed_waveform received stereo (2, L); folded to mono via mean."
+                )
+            else:
+                raise ValueError(
+                    f"feed_waveform expects (L,) or (1, L) waveform; "
+                    f"got shape {tuple(wav.shape)}. "
+                    "Reduce to mono before calling."
+                )
+        elif wav.dim() != 1:
+            raise ValueError(
+                f"feed_waveform expects 1-D or (1, L) tensor; got dim={wav.dim()}."
+            )
 
         self._total_input_samples += wav.shape[0]
 
@@ -442,6 +497,12 @@ class InferenceSession:
             drained = self.feed_waveform(remaining_waveform, fs_out=fs_out)
 
         _fs_out = fs_out if fs_out is not None else self._fs_out
+        if _fs_out != self._fs_out:
+            raise ValueError(
+                f"InferenceSession.flush fs_out={_fs_out} differs from "
+                f"session fs_out={self._fs_out}. Per-call fs_out override is not "
+                f"supported; create a new session for a different output rate."
+            )
 
         if self._wav_buffer is None or self._wav_buffer.shape[0] == 0:
             return drained, None
@@ -517,7 +578,9 @@ class InferenceSession:
                 "Use flush() to end the stream and collect the final chunk."
             )
 
-        # Drain any remaining buffer.
+        # Drain any remaining buffer. flush() returns (drained, tail) but we
+        # ignore them here — finalize() rebuilds the full waveform from the
+        # stitcher.body_list (populated as a side effect of flush()).
         self.flush()
 
         if not self._stitcher.body_list:
@@ -556,7 +619,7 @@ class SEInference(_BaseInference):
 
     STFT-level API (direct model forward)::
 
-        result = model.process_stft(stft_complex)
+        result = model.process_stft(stft_complex, fs_in=16000)
         # result["stft_out"] -> (1, F, T) complex tensor
         # result["waveform"] -> (1, L) float tensor
 
@@ -601,14 +664,8 @@ class SEInference(_BaseInference):
             # Normalize: "baseline" -> "baseline.yaml"
             if not config_str.endswith(".yaml"):
                 config_str = config_str + ".yaml"
-
-            if Path(config_str).is_absolute() and Path(config_str).is_file():
-                # Absolute path to a YAML file
-                yaml_dict = _config.load_config("TF_Restormer", config_str)
-            else:
-                # Config name — resolve via package resources
-                yaml_dict = _config.load_config("TF_Restormer", config_str)
-
+            # load_config handles both absolute paths and package-relative names internally.
+            yaml_dict = _config.load_config("TF_Restormer", config_str)
             cfg = yaml_dict["config"]
             config_stem = Path(config_str).stem  # "baseline"
         elif isinstance(config, dict):
@@ -618,6 +675,12 @@ class SEInference(_BaseInference):
             else:
                 cfg = config
             config_stem = None
+            if checkpoint_path is None:
+                raise ValueError(
+                    "When config is provided as a dict, checkpoint_path must be "
+                    "supplied explicitly. Pass either a local .pt/.pth file, a "
+                    "directory containing model.pt, or a HF Hub repo ID."
+                )
         else:
             raise TypeError(
                 f"config must be a file path (str/Path) or a dict, got {type(config)}"
@@ -627,6 +690,13 @@ class SEInference(_BaseInference):
         _fs_src = cls._resolve_sample_rates(cfg, fs_src)
 
         # ── 3. Resolve checkpoint path ────────────────────────────────────
+        device_str = str(device)
+        if device_str.startswith("cuda") and not torch.cuda.is_available():
+            raise RuntimeError(
+                f"device={device_str!r} requested but torch.cuda.is_available() is False. "
+                "Install a CUDA-enabled PyTorch build (uv sync --extra cu124 / --extra cu126), "
+                "or pass device='cpu'."
+            )
         torch_device = torch.device(device)
 
         if checkpoint_path is None:
@@ -700,6 +770,14 @@ class SEInference(_BaseInference):
         state_dict = _fix_compiled_state_dict(state_dict)
 
         # ── 6. Build model and load weights ───────────────────────────────
+        if cfg.get("model", {}).get("online", False):
+            try:
+                import mamba_ssm  # noqa: F401
+            except ImportError:
+                raise ImportError(
+                    "model.online=True requires the 'mamba' optional dependency. "
+                    "Install with: uv sync --extra mamba  (or: pip install tf-restormer[mamba])"
+                ) from None
         model = Model(**cfg["model"])
         model.load_state_dict(state_dict, strict=True)
         model.to(torch_device).eval()
@@ -793,6 +871,22 @@ class SEInference(_BaseInference):
         Use :meth:`get_istft` for a convenient lookup.
         """
         return self.engine.istft
+
+    @property
+    def fs_out(self) -> int:
+        """Native output sample rate produced by the model (Hz, read-only).
+
+        This is the rate the model is trained to emit. The ``fs_out`` keyword
+        argument on ``process_waveform``/``process_file``/``process_stft``/
+        ``create_session``/``feed_waveform``/``flush`` defaults to this value
+        when omitted; pass an explicit ``fs_out=`` to request a different rate
+        for a single call (or session).
+
+        Setting this property is intentionally not supported — model native
+        rate is fixed at build time. Mirrors the legacy ``_fs_src`` attribute,
+        which is retained for backward compatibility.
+        """
+        return self._fs_src
 
     def get_stft(self, fs: int):
         """Return the STFT module for the given sample rate.
@@ -931,6 +1025,13 @@ class SEInference(_BaseInference):
         input_path = Path(input_path)
         wav_np, orig_fs = sf.read(str(input_path), dtype="float32")
 
+        _fs_out_resolved = int(fs_out) if fs_out is not None else int(self.fs_out)
+        if int(orig_fs) != _fs_out_resolved:
+            logger.info(
+                f"process_file: fs_in={int(orig_fs)} Hz differs from fs_out={_fs_out_resolved} Hz "
+                f"(input file will be enhanced and emitted at {_fs_out_resolved} Hz)."
+            )
+
         # Stereo -> mono: keep first channel
         if wav_np.ndim > 1:
             wav_np = wav_np[:, 0]
@@ -991,6 +1092,26 @@ class SEInference(_BaseInference):
             raise ValueError(
                 f"Expected complex tensor (1, F, T) or real stacked tensor (1, F, T, 2), "
                 f"got shape {stft_input.shape}, dtype {stft_input.dtype}"
+            )
+
+        # ── Validate fs_in against engine.fs_list (strict) ───────────────
+        if str(fs_in) not in self.engine.stft:
+            supported = sorted(int(k) for k in self.engine.fs_list)
+            raise ValueError(
+                f"Unsupported input sample rate for process_stft: {fs_in} Hz. "
+                f"Supported rates: {supported}"
+            )
+        # Validate F-bin matches the STFT instance for fs_in. Read F from
+        # shape-stable axis: x.shape[1] (post-normalization layout is
+        # (1, F, T) complex OR (1, F, T, 2) real-stacked — F is axis 1 in both).
+        expected_N = int(self.engine.frame_length * int(fs_in) / 1000)
+        expected_F = expected_N // 2 + 1
+        actual_F = x.shape[1]
+        if actual_F != expected_F:
+            raise ValueError(
+                f"process_stft: STFT freq bins ({actual_F}) do not match the "
+                f"expected F ({expected_F}) for fs_in={fs_in} Hz. "
+                "Did you compute the STFT at a different sample rate?"
             )
 
         # ── out_F computation (mirrors engine_infer.py L118-121) ─────────
