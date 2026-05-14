@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{name = "Uihyeop Shin", email = "shinuh@mpwav.com"}]
+authors = [{name = "Uihyeop Shin"}]
 urls = { Homepage = "https://tf-restormer.github.io/demo/", Repository = "https://github.com/shinuh/TF-Restormer", Documentation = "https://arxiv.org/abs/2509.21003" }
 dependencies = [
     # Core (inference-only)
