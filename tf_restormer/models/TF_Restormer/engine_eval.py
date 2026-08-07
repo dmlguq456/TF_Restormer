@@ -270,7 +270,7 @@ class EngineEval(object):
                 if (target is not None) and self.output_eval and self._loss_modules_available:
                     metrics['loss_se'] += self.loss(out_wav, src_wav, epoch=epoch).item()
                     metrics['loss_time'] += self.loss_t(out_wav, src_wav).item()
-                    metrics['loss_rep'] += self.loss_fm(out_wav, src_wav).item()
+                    metrics['loss_rep'] += self.loss_fm(out_wav, src_wav, fs_src).item()
 
                 # --- Calculate mean and confidence for display ---
                 if (target is not None) and self.output_eval and self._loss_modules_available:

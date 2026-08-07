@@ -234,7 +234,7 @@ class Engine(object):
             tot_loss_se += cur_loss_se.item()
             cur_loss_time = self.loss_t(out_wav, src_wav)
             tot_loss_time += cur_loss_time.item()
-            cur_loss_rep = self.loss_fm(out_wav, src_wav)
+            cur_loss_rep = self.loss_fm(out_wav, src_wav, fs_target)
             tot_loss_rep += cur_loss_rep.item()
 
             # adversarial training + PESQ loss
@@ -325,7 +325,7 @@ class Engine(object):
                 tot_loss_se += cur_loss_se.item()
                 cur_loss_time = self.loss_t(out_wav, src_wav)
                 tot_loss_time += cur_loss_time.item()
-                cur_loss_rep = self.loss_fm(out_wav, src_wav)
+                cur_loss_rep = self.loss_fm(out_wav, src_wav, fs_target)
                 tot_loss_rep += cur_loss_rep.item()
                 # adversarial training + PESQ loss
                 if 'adversarial' in self.train_phase:

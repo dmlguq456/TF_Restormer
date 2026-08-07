@@ -30,30 +30,49 @@ def l1norm(mat, keepdim=False, reduce='mean'):
 class SSL_FM_Loss(torch.nn.Module):
 	def __init__(self, model_key, resampler, device):
 		super().__init__()
-  
+
 		model = Wav2Vec2Model.from_pretrained(model_key).to(device)
 
 		self.feat_extractor = model.feature_extractor
 		self.feat_extractor.eval()
-		if resampler['orig_freq'] != resampler['new_freq']:
-			self.resampler = Resample(orig_freq=resampler['orig_freq'],
-									 new_freq=resampler['new_freq'],
-									 lowpass_filter_width=64,
-									 rolloff=0.98).to(device)
+		self.device = device
+		#! The SSL model consumes waveforms at a fixed rate (new_freq). orig_freq is only
+		#! the assumed input rate when the caller omits fs — callers whose output rate
+		#! varies must pass fs explicitly (see engine.target_downsample).
+		self.default_fs = int(resampler['orig_freq'])
+		self.target_fs = int(resampler['new_freq'])
+		self.resamplers = {}
+		if self.default_fs != self.target_fs:
+			self.resamplers[self.default_fs] = self._build_resampler(self.default_fs)
+
+	def _build_resampler(self, fs):
+		return Resample(orig_freq=fs,
+						new_freq=self.target_fs,
+						lowpass_filter_width=64,
+						rolloff=0.98).to(self.device)
+
+	def _get_resampler(self, fs):
+		"""Resampler mapping *fs* onto the SSL rate; None when already matched."""
+		if fs == self.target_fs:
+			return None
+		if fs not in self.resamplers:
+			self.resamplers[fs] = self._build_resampler(fs)
+		return self.resamplers[fs]
 
 	def normalize(self, x):
 		mean = x.mean(dim=1, keepdim=True)
 		std = x.std(dim=1, keepdim=True).clamp(min=1e-5)
 		x = (x - mean) / std
-	
+
 		return x
 
-	def forward(self, out, src):
+	def forward(self, out, src, fs=None):
 		out = self.normalize(out)
 		src = self.normalize(src)
-		if hasattr(self, 'resampler'):
-			out = self.resampler(out)
-			src = self.resampler(src)
+		resampler = self._get_resampler(self.default_fs if fs is None else int(fs))
+		if resampler is not None:
+			out = resampler(out)
+			src = resampler(src)
 		with torch.no_grad():
 			src_em = self.feat_extractor(src)
 		out_em = self.feat_extractor(out)
