@@ -230,7 +230,7 @@ class Engine(object):
             src_wav = self.istft[str(fs_target)](target_stft, cplx=True) # B, F, T -> B, L
 
             # regression loss
-            cur_loss_se = self.loss(out_wav, src_wav, epoch=epoch)
+            cur_loss_se = self.loss(out_wav, src_wav, epoch=epoch, fs=fs_target)
             tot_loss_se += cur_loss_se.item()
             cur_loss_time = self.loss_t(out_wav, src_wav)
             tot_loss_time += cur_loss_time.item()
@@ -321,7 +321,7 @@ class Engine(object):
                 out_wav = self.istft[str(fs_target)](out, cplx=True, squeeze=False) # B, F, T -> B, L
                 src_wav = self.istft[str(fs_target)](target_stft, cplx=True) # B, F, T -> B, L
                 # regression loss
-                cur_loss_se = self.loss(out_wav, src_wav, epoch=epoch)
+                cur_loss_se = self.loss(out_wav, src_wav, epoch=epoch, fs=fs_target)
                 tot_loss_se += cur_loss_se.item()
                 cur_loss_time = self.loss_t(out_wav, src_wav)
                 tot_loss_time += cur_loss_time.item()

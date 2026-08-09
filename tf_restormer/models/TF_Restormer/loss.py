@@ -122,16 +122,38 @@ class MS_STFT_L1_complex(torch.nn.Module):
 
 @logger_wraps()
 class MS_STFT_Gen_SC_Loss(torch.nn.Module):
-	def __init__(self, window_size=[256, 512, 768, 1024, 2048], tau=1.0e-4, alpha=None, device='cuda'):
+	#! Reference rate used to reinterpret the deprecated sample-count window form.
+	_LEGACY_WINDOW_FS = 48000
+
+	def __init__(self, window_ms=[40], tau=1.0e-4, alpha=None, device='cuda', window_size=None):
+		"""Multi-resolution generative spectral-convergence loss.
+
+		Args:
+			window_ms:   Analysis windows in milliseconds. Rate-independent — the
+			             sample count is derived per call from the waveform's fs, so
+			             a 40 ms window stays 40 ms at 16/24/44.1/48 kHz.
+			window_size: Deprecated sample-count form, interpreted at 48 kHz
+			             (1920 -> 40 ms). Kept so existing configs keep working.
+		"""
 		super().__init__()
 		self.device = device
-		stft_configs = [(win, win//4) for win in window_size]
-
-		self.stft = [STFT(win, shift, device=device, normalize=True) for win, shift in stft_configs] 
+		if window_size is not None:
+			window_ms = [w * 1000.0 / self._LEGACY_WINDOW_FS for w in window_size]
+		self.window_ms = list(window_ms)
+		self.default_fs = self._LEGACY_WINDOW_FS
+		self.stft_by_fs = {}
 		self.tau = tau
 		self.alpha = alpha
 
-	def forward(self, out_wav, src_wav, epoch=1):
+	def _get_stfts(self, fs):
+		"""STFT bank for *fs*, built so each window keeps its millisecond length."""
+		if fs not in self.stft_by_fs:
+			wins = [int(ms * fs / 1000) for ms in self.window_ms]
+			self.stft_by_fs[fs] = [STFT(w, w // 4, device=self.device, normalize=True)
+								   for w in wins]
+		return self.stft_by_fs[fs]
+
+	def forward(self, out_wav, src_wav, epoch=1, fs=None):
 		if (self.alpha != None) and (epoch > 1):
 			tau = max(self.alpha**(epoch-1), self.tau)
 		else:
@@ -143,7 +165,7 @@ class MS_STFT_Gen_SC_Loss(torch.nn.Module):
 			return torch.mean(src_abs * torch.log1p(dist / src_abs))
 
 		loss_multi_res, loss_multi_res_r, loss_multi_res_i = [], [], []
-		for i, stft in enumerate(self.stft):
+		for i, stft in enumerate(self._get_stfts(self.default_fs if fs is None else int(fs))):
 			out = stft(out_wav, cplx=True)
 			src = stft(src_wav, cplx=True)
 			dist_abs = abs(torch.abs(src) - torch.abs(out))

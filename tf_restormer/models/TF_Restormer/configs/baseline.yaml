@@ -24,7 +24,7 @@ config:
     # -- global --
     fs_list: &var_fs_list ['8000', '16000', '22050', '24000', '32000', '44100', '48000']
     ssl_model_key: &var_SSL_model_key "microsoft/wavlm-large"
-    win_48k: &var_win_48k [1920]
+    win_48k_ms: &var_win_48k_ms [40]         # ms — se-loss analysis window (rate-independent)
     win_48k_disc: &var_win_48k_disc [20, 40, 60, 80, 100]  # ms — discriminator window lengths
     fs_src: &var_fs_src 48000
     fs_in: &var_fs_in 16000
@@ -178,7 +178,7 @@ config:
                 fs_list_src: [16000, 24000, 44100]
             loss_enhance:
                 tau: 1.0e-4
-                window_size: *var_win_48k
+                window_ms: *var_win_48k_ms
             loss_time:
                 beta: 1.0e-3
             loss_rep:
@@ -201,7 +201,7 @@ config:
                 fs_list_src: [16000, 24000, 44100]
             loss_enhance:
                 tau: 1.0e-4
-                window_size: *var_win_48k
+                window_ms: *var_win_48k_ms
             loss_time:
                 beta: 1.0e-3
             loss_rep:
