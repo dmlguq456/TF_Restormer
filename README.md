@@ -315,15 +315,15 @@ Requires `uv sync --extra hub` for Hugging Face upload/download.
 > **⚠️ Repo namespace**: the official maintainer publishes under the `shinuh/` HF organisation. When you train and upload your own checkpoints, replace `shinuh/...` with your own HF account or organisation name (e.g., `--repo-id youraccount/tf-restormer-baseline`).
 >
 > **Important caveats**:
-> - `--upload`: **always pass `--repo-id youraccount/...`**. Omitting it auto-generates `shinuh/tf-restormer-<config>` and your token will fail (or, if you happen to have write access to `shinuh/`, the checkpoint publishes under the maintainer's namespace).
+> - `--upload`: **always pass `--epoch N` and `--repo-id youraccount/...`**. The explicit epoch prevents a release from silently selecting the latest training checkpoint. Omitting the repo ID auto-generates `<whoami>/tf-restormer-<config>`.
 > - `--upload-all`: **does not yet support namespace override** — it always targets `shinuh/...` (tracked as P2-13 code-route fix). Until fixed, upload your own checkpoints individually with `--upload --repo-id youraccount/...`.
 
 ```bash
-# Export a trained checkpoint (strip optimizer state for deployment)
-uv run python tf_restormer/export.py --config baseline.yaml
+# Export an exact trained checkpoint (strip optimizer state for deployment)
+uv run python tf_restormer/export.py --config baseline.yaml --epoch 19
 
 # Upload to Hugging Face Hub
-uv run python tf_restormer/export.py --config baseline.yaml --upload --repo-id shinuh/tf-restormer-baseline
+uv run python tf_restormer/export.py --config baseline.yaml --epoch 19 --upload --repo-id shinuh/tf-restormer-baseline
 
 # Upload all locally exported checkpoints
 uv run python tf_restormer/export.py --upload-all

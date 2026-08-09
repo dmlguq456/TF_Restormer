@@ -18,11 +18,11 @@ Note:
 
 CLI usage::
 
-    # Export latest checkpoint for a config
-    python tf_restormer/export.py --config baseline.yaml
+    # Export an exact checkpoint for a config
+    python tf_restormer/export.py --config baseline.yaml --epoch 19
 
     # Export and upload to HF Hub
-    python tf_restormer/export.py --config baseline.yaml --upload --repo-id <owner>/tf-restormer-baseline
+    python tf_restormer/export.py --config baseline.yaml --epoch 19 --upload --repo-id <owner>/tf-restormer-baseline
 
     # Upload all locally exported checkpoints
     python tf_restormer/export.py --upload-all
@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.resources
+import json
 import os
 import shutil
 from pathlib import Path
@@ -157,8 +158,9 @@ def _ensure_yaml_ext(config_name: str) -> str:
 def _resolve_source_dir(
     config_name: str,
     variant: str = "TF_Restormer",
+    epoch: int | None = None,
 ) -> Path:
-    """Locate the latest checkpoint file inside the variant's log/ tree.
+    """Locate an exact or latest checkpoint inside the variant's log/ tree.
 
     The checkpoint directory follows the convention established by
     ``main_infer.py:L75-78``::
@@ -179,9 +181,11 @@ def _resolve_source_dir(
                      The ``.yaml`` extension is appended if missing.
         variant:     Model variant key.  Currently only ``"TF_Restormer"``
                      is supported.
+        epoch:       Exact epoch to select.  ``None`` retains the historical
+                     latest-checkpoint behavior for library compatibility.
 
     Returns:
-        Path to the latest ``epoch.{NNNN}.pth`` checkpoint file.
+        Path to the selected ``epoch.{NNNN}.pth`` checkpoint file.
 
     Raises:
         KeyError: If *variant* is not recognized.
@@ -218,19 +222,42 @@ def _resolve_source_dir(
             f"Train the model first or verify the config name."
         )
 
-    result = _find_latest_checkpoint(str(chkp_dir))
+    ckpt_path, selected_epoch = _select_checkpoint(chkp_dir, epoch)
+    logger.info(
+        f"Found checkpoint: epoch {selected_epoch:04d} at {ckpt_path}"
+    )
+    return Path(ckpt_path)
+
+
+def _select_checkpoint(
+    checkpoint_dir: Path | str,
+    epoch: int | None = None,
+) -> tuple[str, int]:
+    """Select an exact epoch, or the latest checkpoint when epoch is omitted."""
+    checkpoint_dir = Path(checkpoint_dir)
+    if epoch is not None:
+        if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
+            raise ValueError(f"epoch must be a non-negative integer, got {epoch!r}")
+        checkpoint = checkpoint_dir / f"epoch.{epoch:04d}.pth"
+        if not checkpoint.is_file():
+            raise FileNotFoundError(
+                f"Requested checkpoint epoch {epoch:04d} not found:\n"
+                f"  {checkpoint}"
+            )
+        return str(checkpoint), epoch
+
+    result = _find_latest_checkpoint(str(checkpoint_dir))
     if result is None:
         raise FileNotFoundError(
             f"No epoch.*.pth checkpoints found in:\n"
-            f"  {chkp_dir}\n"
+            f"  {checkpoint_dir}\n"
             f"Train the model first."
         )
-
-    ckpt_path, epoch = result
-    logger.info(
-        f"Found checkpoint: epoch {epoch:04d} at {ckpt_path}"
+    logger.warning(
+        "No epoch was specified; selecting the latest checkpoint for backward "
+        "compatibility. Pass epoch=... (or CLI --epoch) for a release export."
     )
-    return Path(ckpt_path)
+    return result
 
 
 def _file_hash(path: Path | str) -> str:
@@ -249,6 +276,24 @@ def _hash_file_path(ckpt_dir: Path | str) -> Path:
     return Path(ckpt_dir) / ".upload_hash"
 
 
+def _metadata_file_path(ckpt_dir: Path | str) -> Path:
+    """Return the path to the export-provenance sidecar."""
+    return Path(ckpt_dir) / "export_metadata.json"
+
+
+def _bundle_hash(paths: list[Path]) -> str:
+    """Hash the identities of every file in one atomic release bundle."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    for path in paths:
+        digest.update(path.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(_file_hash(path).encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -258,11 +303,13 @@ def export_checkpoint(
     config_name: str,
     variant: str = "TF_Restormer",
     output_dir: Path | str | None = None,
+    epoch: int | None = None,
 ) -> Path:
-    """Export the latest trained checkpoint to a clean ``model.pt``.
+    """Export an exact (or latest) trained checkpoint to a clean ``model.pt``.
 
-    Locates the newest ``epoch.{NNNN}.pth`` checkpoint under the variant's
-    ``log/`` tree, strips optimizer state and ptflops/thop profiling keys
+    Locates an exact ``epoch.{NNNN}.pth`` checkpoint (or the newest checkpoint
+    for backward compatibility) under the variant's ``log/`` tree, strips
+    optimizer state and ptflops/thop profiling keys
     (``total_ops``, ``total_params``), and saves a compact checkpoint that
     contains only ``{"model_state_dict": ...}``.
 
@@ -282,6 +329,8 @@ def export_checkpoint(
         variant:     Model variant key (default ``"TF_Restormer"``).
         output_dir:  Destination directory.  Defaults to
                      ``tf_restormer/checkpoints/{config_stem}/``.
+        epoch:       Exact epoch to export.  Release callers should always set
+                     this; ``None`` keeps the legacy latest behavior.
 
     Returns:
         Absolute path to the exported ``model.pt`` file.
@@ -300,7 +349,8 @@ def export_checkpoint(
     config_stem = Path(config_name).stem  # "baseline"
 
     # Locate source checkpoint
-    src_ckpt = _resolve_source_dir(config_name, variant)
+    src_ckpt = _resolve_source_dir(config_name, variant, epoch=epoch)
+    selected_epoch = int(src_ckpt.stem.split(".")[-1])
 
     # Load checkpoint — prefer weights_only=True for safety
     try:
@@ -338,6 +388,23 @@ def export_checkpoint(
     shutil.copy2(src_yaml, dest_yaml)
     logger.info(f"Config copied to: {dest_yaml}")
 
+    metadata = {
+        "schema_version": 1,
+        "variant": variant,
+        "config_name": config_name,
+        "source_epoch": selected_epoch,
+        "source_checkpoint": src_ckpt.name,
+        "source_checkpoint_sha256": _file_hash(src_ckpt),
+        "model_sha256": _file_hash(dest_ckpt),
+        "config_sha256": _file_hash(dest_yaml),
+    }
+    metadata_path = _metadata_file_path(dest_dir)
+    metadata_path.write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    logger.info(f"Export provenance saved to: {metadata_path}")
+
     return dest_ckpt
 
 
@@ -348,6 +415,9 @@ def upload_to_hub(
     private: bool = True,
     token: str | None = None,
     force: bool = False,
+    checkpoint_dir: Path | str | None = None,
+    expected_epoch: int | None = None,
+    model_card: Path | str | None = None,
 ) -> str | None:
     """Upload an exported checkpoint to the Hugging Face Hub.
 
@@ -364,6 +434,11 @@ def upload_to_hub(
         private:     Create a private repo (default ``True``).
         token:       HF API token.  Uses the cached token when ``None``.
         force:       Upload even if the checkpoint hasn't changed.
+        checkpoint_dir: Directory containing the exported ``model.pt`` and
+                     sidecars. Defaults to the package checkpoint directory.
+        expected_epoch: Require export metadata to name this exact source epoch.
+        model_card: Optional README/model-card path to include in the same Hub
+                     commit as the checkpoint bundle.
 
     Returns:
         URL of the HF repo, or ``None`` if the upload was skipped.
@@ -372,39 +447,61 @@ def upload_to_hub(
         FileNotFoundError: If the exported checkpoint does not exist.
         ImportError: If ``huggingface_hub`` is not installed.
     """
-    try:
-        from huggingface_hub import HfApi
-    except ImportError:
-        raise ImportError(
-            "huggingface_hub is required for HF Hub uploads.\n"
-            "Install with: uv sync --extra hub  (or: pip install tf-restormer[hub])"
-        )
-
     config_name = _ensure_yaml_ext(config_name)
     config_stem = Path(config_name).stem
 
-    ckpt_path = _DEFAULT_CKPT_HOME / config_stem / "model.pt"
+    ckpt_dir = (
+        Path(checkpoint_dir)
+        if checkpoint_dir is not None
+        else _DEFAULT_CKPT_HOME / config_stem
+    )
+    ckpt_path = ckpt_dir / "model.pt"
     if not ckpt_path.is_file():
         raise FileNotFoundError(
             f"No exported checkpoint at {ckpt_path}\n"
             f"Export first: python tf_restormer/export.py --config {config_name}"
         )
 
-    # Hash-based skip
-    current_hash = _file_hash(ckpt_path)
-    hash_file = _hash_file_path(ckpt_path.parent)
+    yaml_path = ckpt_dir / "config.yaml"
+    if not yaml_path.is_file():
+        raise FileNotFoundError(
+            f"Exported config is missing: {yaml_path}\n"
+            "Run export_checkpoint() before uploading."
+        )
+    metadata_path = _metadata_file_path(ckpt_dir)
+    metadata = None
+    if metadata_path.is_file():
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if expected_epoch is not None:
+        if metadata is None:
+            raise RuntimeError(
+                f"Cannot verify source epoch {expected_epoch}: missing {metadata_path}"
+            )
+        if metadata.get("source_epoch") != expected_epoch:
+            raise RuntimeError(
+                "Export provenance mismatch: expected epoch "
+                f"{expected_epoch}, found {metadata.get('source_epoch')!r}"
+            )
+    model_card_path = Path(model_card) if model_card is not None else None
+    if model_card_path is not None and not model_card_path.is_file():
+        raise FileNotFoundError(f"Model card is missing: {model_card_path}")
+
+    bundle_paths = [ckpt_path, yaml_path]
+    if metadata_path.is_file():
+        bundle_paths.append(metadata_path)
+    if model_card_path is not None:
+        bundle_paths.append(model_card_path)
+    current_hash = _bundle_hash(bundle_paths)
+    hash_file = _hash_file_path(ckpt_dir)
     if (
         not force
         and hash_file.exists()
         and hash_file.read_text().strip() == current_hash
     ):
         logger.info(
-            f"[SKIP] {config_stem} — checkpoint unchanged since last upload"
+            f"[SKIP] {config_stem} — release bundle unchanged since last upload"
         )
         return None
-
-    # Resolve config YAML
-    yaml_path = resolve_config(variant, config_name)
 
     # Resolve repo_id — always route through the helper so that:
     #   - None           → whoami namespace + auto-slug
@@ -428,18 +525,42 @@ def upload_to_hub(
         )
     # else: repo_id already contains "/" → use verbatim.
 
+    # Import the optional Hub dependency only after local provenance validation
+    # so malformed release directories fail before any network-capable setup.
+    try:
+        from huggingface_hub import CommitOperationAdd, HfApi
+    except ImportError:
+        raise ImportError(
+            "huggingface_hub is required for HF Hub uploads.\n"
+            "Install with: uv sync --extra hub  (or: pip install tf-restormer[hub])"
+        )
+
     # Upload
     api = HfApi(token=token)
     api.create_repo(repo_id, private=private, exist_ok=True)
-    api.upload_file(
-        path_or_fileobj=str(ckpt_path),
-        path_in_repo="model.pt",
+    operations = [
+        CommitOperationAdd(path_in_repo="model.pt", path_or_fileobj=str(ckpt_path)),
+        CommitOperationAdd(path_in_repo="config.yaml", path_or_fileobj=str(yaml_path)),
+    ]
+    if metadata_path.is_file():
+        operations.append(
+            CommitOperationAdd(
+                path_in_repo="export_metadata.json",
+                path_or_fileobj=str(metadata_path),
+            )
+        )
+    if model_card_path is not None:
+        operations.append(
+            CommitOperationAdd(
+                path_in_repo="README.md",
+                path_or_fileobj=str(model_card_path),
+            )
+        )
+    epoch_label = metadata.get("source_epoch") if metadata else "unknown"
+    api.create_commit(
         repo_id=repo_id,
-    )
-    api.upload_file(
-        path_or_fileobj=str(yaml_path),
-        path_in_repo="config.yaml",
-        repo_id=repo_id,
+        operations=operations,
+        commit_message=f"Release baseline checkpoint from epoch {epoch_label}",
     )
 
     # Save hash sentinel
@@ -617,12 +738,12 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  # Export latest checkpoint\n"
-            "  python tf_restormer/export.py --config baseline.yaml\n"
+            "  # Export an exact checkpoint\n"
+            "  python tf_restormer/export.py --config baseline.yaml --epoch 19\n"
             "\n"
             "Upload examples (--repo-id is optional; namespace auto-derived via whoami):\n"
-            "  python tf_restormer/export.py --config baseline.yaml --upload\n"
-            "  python tf_restormer/export.py --config baseline.yaml --upload"
+            "  python tf_restormer/export.py --config baseline.yaml --epoch 19 --upload\n"
+            "  python tf_restormer/export.py --config baseline.yaml --epoch 19 --upload"
             " --repo-id <owner>/tf-restormer-baseline\n"
             "\n"
             "  # Upload all locally exported checkpoints to HF Hub\n"
@@ -649,6 +770,16 @@ if __name__ == "__main__":
         help=(
             "Output directory for the exported checkpoint. "
             f"Defaults to tf_restormer/checkpoints/{{config_stem}}/."
+        ),
+    )
+    parser.add_argument(
+        "--epoch",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Exact training epoch to export. Required with --upload so a "
+            "release can never silently select the latest checkpoint."
         ),
     )
     parser.add_argument(
@@ -709,15 +840,20 @@ if __name__ == "__main__":
     elif cli_args.upload:
         if cli_args.config is None:
             parser.error("--upload requires --config")
+        if cli_args.epoch is None:
+            parser.error("--upload requires --epoch")
         exported_path = export_checkpoint(
             config_name=cli_args.config,
             output_dir=cli_args.output,
+            epoch=cli_args.epoch,
         )
         url = upload_to_hub(
             config_name=cli_args.config,
             repo_id=cli_args.repo_id,
             private=not cli_args.public,
             force=cli_args.force,
+            checkpoint_dir=cli_args.output,
+            expected_epoch=cli_args.epoch,
         )
         print(f"Done: exported={exported_path}, hub={url}")
 
@@ -728,5 +864,6 @@ if __name__ == "__main__":
         exported_path = export_checkpoint(
             config_name=cli_args.config,
             output_dir=cli_args.output,
+            epoch=cli_args.epoch,
         )
         print(f"Done: {exported_path}")
